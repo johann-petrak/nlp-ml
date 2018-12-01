@@ -72,9 +72,10 @@ class TransformDataset(Dataset):
 
 class LineTsvDataset(Dataset):
     """
-    Represent a large TSV file or simple text (single column only) file as a dataset. 
+    Represent a large TSV file or simple one document/text per line file as a dataset.
     When creating the instance, an index file is
     is created and stored along with the original file, unless it already exists.
+    NOTE: this works only if lines are separated with "\n"!!!
     """
 
     def __init__(self, file=None, cachefile=None, reinit=False, 
@@ -98,7 +99,7 @@ class LineTsvDataset(Dataset):
         if reinit or not os.path.exists(cachefile):
             self.idx2offlen = self._index4file(file)
             with open(cachefile, "wb") as cachewriter:
-                pickle._dump(self.idx2offlen, cachewriter)
+                pickle.dump(self.idx2offlen, cachewriter)
         else:
             with open(cachefile, "rb") as cacheloader:
                 self.idx2offlen = pickle.load(cacheloader)
@@ -113,12 +114,17 @@ class LineTsvDataset(Dataset):
         with open(file, "rb") as reader:
             startoffset = 0
             linenr = 0
-            for bytes in reader:
+            # since this is reading in binary mode, the terminator is always "\n"
+            # NOTE: we could also read in text mode, specify the newline or automatically
+            # recognize both both Windows and Linux newlines and then count by encoding the
+            # utf8 string we get into bytes and hope for the best. However, we expect all
+            # line corpora to be in Linux format for now!
+            for linebytes in reader:
                 # line = bytes.decode(self.encoding)
-                l = len(bytes)
-                idx2offlen.append((startoffset, l))
+                linelen = len(linebytes)
+                idx2offlen.append((startoffset, linelen))
                 # print("DEBUG indexing {}/{}".format(startoffset,l))
-                startoffset += l
+                startoffset += linelen
                 linenr += 1
                 if self.logevery is not None and linenr % self.logevery == 0:
                     print("Lines indexed: {}".format(linenr), file=sys.stderr)
@@ -142,7 +148,6 @@ class LineTsvDataset(Dataset):
                 return [fields[i] for i in self.cols]
             else:
                 return fields[self.cols]
-
 
 
 if __name__ == "__main__":
