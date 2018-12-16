@@ -37,6 +37,8 @@ For now, we want to consider:
 * skorch
 * dstoolbox
 * PyText !!
+  * https://facebook.ai/developers/tools/pytext
+  * https://pytext-pytext.readthedocs-hosted.com/en/latest/
 
 ## Installation and Requirements
 
