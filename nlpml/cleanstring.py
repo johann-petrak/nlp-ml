@@ -8,6 +8,7 @@ import html
 import codecs
 import re
 import htmlparser
+import sys
 
 # Notes: 
 # replace hex codes which represent unicode, but replace invalid stuff with spaces:
@@ -50,11 +51,19 @@ def clean_string(thestring, replace_invalid=None, process_html=True, parse_html=
         else:
             thestring = html.unescape(thestring)
     # step 2: remove hex escapes, and allow hex escapes sequences to get interpreted as UTF-8
-    thestring = codecs.decode(codecs.escape_decode(thestring)[0], encoding="utf-8", errors='replace')
+    oldstring = thestring
+    try:
+        thestring = codecs.decode(codecs.escape_decode(thestring)[0], encoding="utf-8", errors='replace')
+    except:
+        # we get an error if the original string contains some weird backslash which could be
+        # just a normal literal backslash or the result from going through the clean_string code twice,
+        # for now we ignore this
+        # print("Problem {} converting string: >{}<".format(sys.exc_info(), oldstring), file=sys.stderr)
+        pass
     # step 3: if requested, use a different replacement
     if replace_invalid is not None:
         thestring = thestring.replace("\ufffd", replace_invalid)
     # step 4: replace various kinds of unicode-escapes by searching and replacing just the specific occurrences of the escapes
     thestring = RE_FIND_UESCAPES.sub(lambda m: codecs.decode(m.group(0), 'unicode-escape'), thestring)
-    return str
+    return thestring
 
