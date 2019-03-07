@@ -12,15 +12,18 @@ import sys
 import unicodedata
 
 RE_FIND_UESCAPES = re.compile(r'''\\U[0-9a-fA-F]{8,8}|\\u[0-9a-fA-F]{4,4}|\\x[0-9a-fA-F]{2,2}\\[0-7]{1,3}\\[\\'"abfnrtv]''', re.UNICODE)
+RE_WHITESPACE = re.compile(r'\s')
+RE_SPACES = re.compile(r'  +')
 
-
-def clean_string(thestring, replace_invalid=None, process_html=True, parse_html=True):
+def clean_string(thestring, replace_invalid=None, process_html=True, parse_html=True, whitespace2space=True, singlespaces=True):
     """
     Return a copy of the string where html character entities, hex-escapes, unicode escapes and python string escapes
     are replaced with the actual utf-8 replacement. Anything that cannot be converted to utf is replaced with
     by the unicode replacement character by default or something specified as "replace_invalid".
     process_html controls if HTML stuff is processed at all, if yes, parse_html controls if the HTML uis
-    getting fully parsed or if not, only HTML character entities are replaced (but not HTML code like links, paragraphs)
+    getting fully parsed or if not, only HTML character entities are replaced (but not HTML code like links, paragraphs).
+    If whitespace2space is True, all whitespace is replaced by a blank/space. If singlespaces is True, sequences of multiple
+    spaces are replaced with a single space.
     """
     # step 1: parse HTML or remove HTML character entities
     if process_html:
@@ -50,6 +53,11 @@ def clean_string(thestring, replace_invalid=None, process_html=True, parse_html=
     thestring = RE_FIND_UESCAPES.sub(lambda m: codecs.decode(m.group(0), 'unicode-escape'), thestring)
     # step 5: normalize unicode to composed compatibility mode
     thestring = unicodedata.normalize("NFKC", thestring)
+    # step 6: replace non-space whitespace with space
+    if whitespace2space:
+        thestring.replace(RE_WHITESPACE, " ")
+    if singlespaces:
+        thestring.replace(RE_SPACES, " ")
     return thestring
 
 if __name__ == "__main__":
