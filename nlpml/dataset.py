@@ -78,31 +78,31 @@ class LineTsvDataset(Dataset):
     NOTE: this works only if lines are separated with "\n"!!!
     """
 
-    def __init__(self, file=None, cachefile=None, reinit=False, 
+    def __init__(self, file=None, indexfile=None, reinit=False, 
                  encoding="utf8", cols=None, logevery=1000):
         """
         Create the dataset instance from the given file.
         :param file: the tsv file
-        :param cachefile: cache file to use, by default the original file path with ".dscache" appended
-        :param reinit: if True, forces re-creation of the cache file even if it already exists
+        :param indexfile: index file to use, by default the original file path with ".dsindex" appended
+        :param reinit: if True, forces re-creation of the index file even if it already exists
         :param if cols is None, the whole line is returned to the iterator, otherwise if it is a number, that
           column is returned, otherwise if it is a list of numbers, those fields are returned
         """
         self.file = file
-        if cachefile is None:
-            cachefile = file + ".dscache"
-        self.cachefile = cachefile
+        if indexfile is None:
+            indexfile = file + ".dsindex"
+        self.indexfile = indexfile
         self.encoding = encoding
         self.cols = cols
         self.logevery = logevery
         # if we need to create the cache file, do this now.
-        if reinit or not os.path.exists(cachefile):
+        if reinit or not os.path.exists(indexfile):
             self.idx2offlen = self._index4file(file)
-            with open(cachefile, "wb") as cachewriter:
-                pickle.dump(self.idx2offlen, cachewriter)
+            with open(indexfile, "wb") as indexwriter:
+                pickle.dump(self.idx2offlen, indexwriter)
         else:
-            with open(cachefile, "rb") as cacheloader:
-                self.idx2offlen = pickle.load(cacheloader)
+            with open(indexfile, "rb") as indexloader:
+                self.idx2offlen = pickle.load(indexloader)
         self.reader = open(self.file, "rb")
         self.len = len(self.idx2offlen)
 
