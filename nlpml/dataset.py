@@ -70,6 +70,9 @@ class ShuffledDataset(ExtendedDataset):
         return len(self.idxs)
 
 
+# TODO: this should get replaced by ProcessingDataset where the transformations
+# are really restricted to processing resource instances which can be pickled,
+# so that this works properly with multiprocessing.
 class TransformDataset(ExtendedDataset):
 
     def __init__(self, dataset, transforms):
