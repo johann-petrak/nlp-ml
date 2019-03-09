@@ -55,9 +55,9 @@ def clean_string(thestring, replace_invalid=None, process_html=True, parse_html=
     thestring = unicodedata.normalize("NFKC", thestring)
     # step 6: replace non-space whitespace with space
     if whitespace2space:
-        thestring.replace(RE_WHITESPACE, " ")
+        thestring = re.sub(RE_WHITESPACE, " ", thestring)
     if singlespaces:
-        thestring.replace(RE_SPACES, " ")
+        thestring = re.sub(RE_SPACES, " ", thestring)
     return thestring
 
 if __name__ == "__main__":
