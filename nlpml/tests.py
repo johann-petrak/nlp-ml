@@ -51,6 +51,7 @@ class TestProcessingResources1(unittest.TestCase):
         pipeline.append(pr)
         assert ProcessingResource.supports_multiprocessing(pipeline) == True
 
+
 class TestProcessor1(unittest.TestCase):
 
     def test_serial1(self):
@@ -66,6 +67,7 @@ class TestProcessor1(unittest.TestCase):
         proc = SequenceProcessor(source, nprocesses=1, pipeline=pipeline, destination=dest1)
         ret = proc.run()
         assert ret == (100, 0, False, False)
+        # logger.info("destination get_data is {}".format(dest1.get_data()))
         assert dest1.get_data() == target
 
         results = []
@@ -73,6 +75,7 @@ class TestProcessor1(unittest.TestCase):
         proc = SequenceProcessor(source, nprocesses=1, pipeline=None, destination=dest1)
         ret = proc.run()
         assert ret == (100, 0, False, False)
+        # logger.info("destination get_data is {}".format(dest1.get_data()))
         assert dest1.get_data() == source
 
         results = []
@@ -80,14 +83,16 @@ class TestProcessor1(unittest.TestCase):
         proc = SequenceProcessor(source, nprocesses=3, pipeline=pipeline, destination=dest1)
         ret = proc.run()
         assert ret == (100, 0, False, False)
+        # NOTE: results may not be in order, this is ok!
         # logger.info("destination get_data is {}".format(dest1.get_data()))
-        assert dest1.get_data() == target
+        assert sorted(dest1.get_data()) == target
 
         results = []
         dest1 = SdList(results)
         proc = SequenceProcessor(source, nprocesses=3, pipeline=pipeline, destination=dest1, maxsize_iqueue=1, maxsize_oqueue=1)
         ret = proc.run()
         assert ret == (100, 0, False, False)
+        # NOTE: results may not be in order, this is ok!
         # logger.info("destination get_data is {}".format(dest1.get_data()))
-        assert dest1.get_data() == target
+        assert sorted(dest1.get_data()) == target
 

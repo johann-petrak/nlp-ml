@@ -4,6 +4,11 @@ Base class and example implementations for serial destinations. Anything that im
 write and optionally close can be used too.
 A destination can get just the item or a tuple with id and item, depending on how the processor
 was configured before running.
+NOTE: the set_data method was added for situations where the destination is an in-memory object but
+the destination instance is running in a different process. In that situation the code taking care of the processes
+can get the data from the other process and set it in the original instance.
+However, the processors in processor.py run the destination writer in the same process where it came from, so this
+should be fine.
 '''
 
 from abc import ABC, abstractmethod

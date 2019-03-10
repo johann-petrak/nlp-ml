@@ -23,9 +23,6 @@ is optionally done in parallel using multiprocessing.
 #   Finally this processor can also have a serial destination writer component for putting
 #   the items back into e.g. a file. Order is not preserved!
 
-# TODO: if a destination is in-memory, we won't get the result because it is built in a different process!
-# In this case, we need to return the result from the worker process!
-
 # TODO: figure out how to implement the "stoponerror" behaviour for multiprocessing.
 # E.g. the source iterator and the processing pool need to know when the destination processor
 # encountered an error and stop. How to communicate this to them?
@@ -35,6 +32,16 @@ is optionally done in parallel using multiprocessing.
 # per process and one of the processes regularly checking the sum of all those values.
 # Then if the sum exceeds the limit, that process updates a shared boolean value which gets
 # checked by all processes, if it is set, all of them terminate
+
+# TODO: change the way how pipelines work: a pipeline is just a special PR, never a list.
+# This can then be used to handle the problem of PRs calculating global stats:
+# * if a PR calculates global stats, they have to return the data via get_data()
+# * the PR has to implement merge_data(listofdata) to handle merging a list of results into a single one
+#   The result of merging will get merged with the result in the instance where merge_data is called, but
+#   in the usual setting, this instance will not have any result (because only copies were used in different processes)
+# * after merge_result, the get_data call will return the merged result, but this is also returned by merge_result
+
+# TODO: implement the dataset processor, the current version is based on the old sequence processor
 
 from abc import ABC, abstractmethod
 from processingresources import ProcessingResource
@@ -82,11 +89,10 @@ def run_pipeline_on(pipeline, item, **kwargs):
     return item
 
 
-#def source_reader(iqueue, source, nprocesses, **kwargs):
-def source_reader(*args, **kwargs):
-    iqueue, source, nprocesses = args
+def source_reader(iqueue, source, **kwargs):
     logger = logging.getLogger(__name__+".source_reader")
-    logger.debug("Called with {}".format(args))
+    nprocesses = kwargs["nprocesses"]
+    logger.debug("Called with queue={}, source={}, nprocesses={}, kwargs={}".format(iqueue, source, nprocesses, kwargs))
     have_error = False
     try:
         for id, item in enumerate(source):
@@ -105,10 +111,10 @@ def source_reader(*args, **kwargs):
     return have_error
 
 
-def destination_writer(*args, use_destination_tuple=False, **kwargs):
-    oqueue, destination, nprocesses = args
+def destination_writer(oqueue, destination, use_destination_tuple=False, **kwargs):
     logger = logging.getLogger(__name__+".destination_writer")
-    logger.debug("Called with {}".format(args))
+    nprocesses = kwargs["nprocesses"]
+    logger.debug("Called with queue={}, destination={}, nprocesses={}, kwargs={}".format(oqueue, destination, nprocesses, kwargs))
     have_error = False
     try:
         # Each of the processes in the pool is sending items, when they are out of items they send
@@ -276,13 +282,13 @@ class SequenceProcessor(Processor):
             input_queue = mgr.Queue(maxsize=self.maxsize_iqeueue)
             reader_pool = Pool(1)
             logger.debug("Running reader pool apply async")
-            reader_pool_ret = pool.apply_async(source_reader, [input_queue, self.source, self.nprocesses], kw)
+            reader_pool_ret = pool.apply_async(source_reader, [input_queue, self.source], kw)
             output_queue = None
             if self.destination is not None:
                 output_queue = mgr.Queue(maxsize=self.maxsize_oqeueue)
-                writer_pool = Pool(1)
-                logger.debug("Running writer pool apply async")
-                writer_pool_ret = pool.apply_async(destination_writer, [output_queue, self.destination, self.nprocesses], kw)
+            #    writer_pool = Pool(1)
+            #    logger.debug("Running writer pool apply async")
+            #    writer_pool_ret = pool.apply_async(destination_writer, [output_queue, self.destination, self.nprocesses], kw)
             pipeline_runner = PipelineRunnerSeq(input_queue, output_queue)
             for i in range(self.nprocesses):
                 # logger.info("Starting process {}".format(i))
@@ -292,19 +298,24 @@ class SequenceProcessor(Processor):
                 ret = pool.apply_async(pipeline_runner, (self.pipeline,), tmpkw)
                 rets.append(ret)
             # now wait for the processes and pool to finish
+            # TODO If we have a destination, we could actually do the processing for that one right here instead of
+            # a separate process!
+            if self.destination is not None:
+                logger.info("Calling destination writer with {} {} {} {}".format(output_queue, self.destination, self.nprocesses, kw))
+                destination_writer(output_queue, self.destination, **kw)
+
             pool.close()
             pool.join()
             reader_pool.close()
             reader_pool.join()
             reader_error = reader_pool_ret.get()
             writer_error = False
-            if self.destination:
-                writer_pool.close()
-                writer_pool.join()
-                writer_error, d = writer_pool_ret.get()
-                if isinstance(self.destination, SerialDestination) and d is not None:
-                    self.destination.set_data(d)
-            # actually get the total values for n_total and n_nok from the per-process results
+            #if self.destination:
+            #    writer_pool.close()
+            #    writer_pool.join()
+            #    writer_error, d = writer_pool_ret.get()
+            #    if isinstance(self.destination, SerialDestination) and d is not None:
+            #        self.destination.set_data(d)
 
             for r in rets:
                 rval = r.get()
