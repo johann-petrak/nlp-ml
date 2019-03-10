@@ -17,7 +17,7 @@ logger.addHandler(streamhandler)
 #logger1.addHandler(filehandler)
 #logger.addHandler(filehandler)
 
-from processingresources import PrCallFunction, ProcessingResource
+from processingresources import PrCallFunction, ProcessingResource, PrPipeline
 
 
 def putinlist(item):
@@ -44,12 +44,11 @@ class TestProcessingResources1(unittest.TestCase):
         assert ret == [item]
 
         assert pr.supports_multiprocessing() == True
-        assert ProcessingResource.supports_multiprocessing(pr) == True
 
-        pipeline = []
-        assert ProcessingResource.supports_multiprocessing(pipeline) == True
-        pipeline.append(pr)
-        assert ProcessingResource.supports_multiprocessing(pipeline) == True
+        pipeline = PrPipeline([])
+        assert pipeline.supports_multiprocessing() == True
+        pipeline = PrPipeline([pr])
+        assert pipeline.supports_multiprocessing() == True
 
 
 class TestProcessorSeq1(unittest.TestCase):
@@ -63,7 +62,7 @@ class TestProcessorSeq1(unittest.TestCase):
         dest1 = SdList(results)
         pr1 = PrCallFunction(plus1)
         pr2 = PrCallFunction(times3)
-        pipeline = [pr1, pr2]
+        pipeline = PrPipeline([pr1, pr2])
         proc = SequenceProcessor(source, nprocesses=1, pipeline=pipeline, destination=dest1)
         ret = proc.run()
         assert ret == (100, 0, False, False)
@@ -109,7 +108,7 @@ class TestProcessorDataset1(unittest.TestCase):
         dest1 = SdList(results)
         pr1 = PrCallFunction(plus1)
         pr2 = PrCallFunction(times3)
-        pipeline = [pr1, pr2]
+        pipeline = PrPipeline([pr1, pr2])
         proc = DatasetProcessor(ds, nprocesses=1, pipeline=pipeline, destination=dest1)
         ret = proc.run()
         assert ret == (100, 0, False)

@@ -15,7 +15,7 @@ class ProcessingResource(ABC):
     def __init__(self):
         self.singleprocess = False
 
-    def _supports_multiprocessing(self):
+    def supports_multiprocessing(self):
         if hasattr(self, "singleprocess") and self.singleprocess:
             return False
         else:
@@ -25,25 +25,20 @@ class ProcessingResource(ABC):
     def __call__(self, item, **kwargs):
         pass
 
+    def get_data(self):
+        """
+        Get whatever data the PR has accumulated
+        :return: the global data gathered by the PR
+        """
+        return None
 
-    # Note: the following function is defined so it can be used as a normal instance function
-    # and like a static function for the class: the parameter is either self, for an instance
-    # of a pipeline if called as static function.
-    def supports_multiprocessing(pipeline):
+    def merge_data(self, listofdata):
         """
-        Check a whole pipeline if it supports multiprocessing
-        :return: true if all contained or nested Prs support multiprocessing
+        Merge a list of data gathered by copies of this PR into a single data and store it.
+        :param listofdata: a list of data each element is the data from another copy of this PR
+        :return: the merged data
         """
-        if pipeline is None:
-            return True
-        elif isinstance(pipeline, ProcessingResource):
-            return pipeline._supports_multiprocessing()
-        elif isinstance(pipeline, list):
-            ret = True
-            for pr in pipeline:
-                if not ProcessingResource.supports_multiprocessing(pr):
-                    return False
-        return True
+        return None
 
 
 class PrCallFunction(ProcessingResource):
@@ -57,3 +52,16 @@ class PrCallFunction(ProcessingResource):
 
     def __call__(self, item, **kwargs):
         return self.function(item, *self.args)
+
+class PrPipeline(ProcessingResource):
+    """
+    Processing resource that runs a list of other processing resources in sequence
+    """
+
+    def __init__(self, listofprs):
+        self.listofprs = listofprs
+
+    def __call__(self, item, **kwargs):
+        for pr in self.listofprs:
+            item = pr(item)
+        return item

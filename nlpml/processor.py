@@ -165,7 +165,8 @@ class PipelineRunnerSeq:
             try:
                 kwargs["id"] = id
                 logger.debug("Running the pipeline on id {} item {}".format(id, item))
-                item = run_pipeline_on(pipeline, item, **kwargs)
+                if pipeline is not None:
+                    item = run_pipeline_on(pipeline, item, **kwargs)
                 logger.debug("Run pipeline item is now {}".format(item))
                 if self.output_queue is not None:
                     logger.debug("Writing to output queue id {} item {}".format(id, item))
@@ -203,7 +204,8 @@ class PipelineRunnerDataset:
             try:
                 kwargs["id"] = id
                 logger.debug("Running the pipeline on id {} item {}".format(id, item))
-                item = run_pipeline_on(pipeline, item, **kwargs)
+                if pipeline is not None:
+                    item = run_pipeline_on(pipeline, item, **kwargs)
                 logger.debug("Run pipeline item is now {}".format(item))
                 if self.output_queue is not None:
                     logger.debug("Writing to output queue id {} item {}".format(id, item))
@@ -287,7 +289,8 @@ class SequenceProcessor(Processor):
             for id, item in enumerate(self.source):
                 n_total += 1
                 try:
-                    item = run_pipeline_on(self.pipeline, item, id=id, pid=1)
+                    if self.pipeline is not None:
+                        item = run_pipeline_on(self.pipeline, item, id=id, pid=1)
                 except Exception as ex:
                     logger.error("Error processing item {}: {}".format(id, ex))
                     n_nok += 1
@@ -414,7 +417,8 @@ class DatasetProcessor(Processor):
             for id, item in enumerate(self.dataset):
                 n_total += 1
                 try:
-                    item = run_pipeline_on(self.pipeline, item, id=id, pid=1)
+                    if self.pipeline is not None:
+                        item = run_pipeline_on(self.pipeline, item, id=id, pid=1)
                 except Exception as ex:
                     logger.error("Error processing item {}: {}".format(id, ex))
                     n_nok += 1
