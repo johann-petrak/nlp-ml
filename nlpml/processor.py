@@ -23,6 +23,9 @@ is optionally done in parallel using multiprocessing.
 #   Finally this processor can also have a serial destination writer component for putting
 #   the items back into e.g. a file. Order is not preserved!
 
+# TODO: if a destination is in-memory, we won't get the result because it is built in a different process!
+# In this case, we need to return the result from the worker process!
+
 # TODO: figure out how to implement the "stoponerror" behaviour for multiprocessing.
 # E.g. the source iterator and the processing pool need to know when the destination processor
 # encountered an error and stop. How to communicate this to them?
@@ -36,12 +39,13 @@ is optionally done in parallel using multiprocessing.
 from abc import ABC, abstractmethod
 from processingresources import ProcessingResource
 from multiprocessing import Pool, Queue
+from destination import SerialDestination
 import multiprocessing
 import logging
 import sys
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 streamhandler = logging.StreamHandler(stream=sys.stderr)
 formatter = logging.Formatter(
                 '%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
@@ -72,53 +76,124 @@ def run_pipeline_on(pipeline, item, **kwargs):
         return item
     if isinstance(pipeline, list):
         for pr in pipeline:
-            item = run_pipeline_on(pr, item, kwargs)
+            item = run_pipeline_on(pr, item, **kwargs)
     else:
-        item = pipeline(item, kwargs)
+        item = pipeline(item, **kwargs)
     return item
 
 
-def source_reader(iqueue, source, **kwargs):
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
+#def source_reader(iqueue, source, nprocesses, **kwargs):
+def source_reader(*args, **kwargs):
+    iqueue, source, nprocesses = args
+    logger = logging.getLogger(__name__+".source_reader")
+    logger.setLevel(logging.DEBUG)
     streamhandler = logging.StreamHandler(stream=sys.stderr)
     formatter = logging.Formatter(
         '%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
     streamhandler.setFormatter(formatter)
     logger.addHandler(streamhandler)
+    logger.debug("Called with {}".format(args))
     have_error = False
     try:
         for id, item in enumerate(source):
+            print("Writing to iqueue id={}".format(id), file=sys.stderr)
+            logger.debug("Writing to input queue id={}".format(id))
             iqueue.put((id, item))
         if hasattr(source, "close") and callable(source.close):
             source.close()
     except Exception as ex:
         logger.error("Error in source_reader: {}".format(ex))
         have_error = True
+    # in order to signal that we are finished we send tuples with None, None over the queue, one for each
+    # of the worker processes
+    for i in range(nprocesses):
+        print("Writing to iqueue id={}".format(None), file=sys.stderr)
+        logger.debug("Writing to input queue id={}".format(None))
+        iqueue.put((None, None))
     return have_error
 
 
-def destination_writer(oqueue, destination, use_destination_tuple=False, **kwargs):
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
+def destination_writer(*args, use_destination_tuple=False, **kwargs):
+    oqueue, destination, nprocesses = args
+    logger = logging.getLogger(__name__+".destination_writer")
+    logger.setLevel(logging.DEBUG)
     streamhandler = logging.StreamHandler(stream=sys.stderr)
     formatter = logging.Formatter(
         '%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
     streamhandler.setFormatter(formatter)
     logger.addHandler(streamhandler)
+    logger.debug("Called with {}".format(args))
     have_error = False
     try:
-        for id, item in oqueue:
-            if use_destination_tuple:
-                destination.write((id, item))
+        # Each of the processes in the pool is sending items, when they are out of items they send
+        # a tuple with two Nils.
+        # We have to retrieve all the nprocesses nil tuples in order to prevent the processes to potentially block
+        # when writing, so we make sure we exit only after we have seen all of them
+        n_none = 0
+        while n_none < nprocesses:
+            logger.debug("Reading from output queue")
+            id, item = oqueue.get()
+            logger.debug("Got from output queue: id={}".format(id))
+            if id is not None:
+                if use_destination_tuple:
+                    destination.write((id, item))
+                else:
+                    destination.write(item)
             else:
-                destination.write(item)
+                n_none += 1
         if hasattr(destination, "close") and callable(destination.close):
             destination.close()
     except Exception as ex:
         logger.error("Error in destination_writer: {}".format(ex))
         have_error = True
-    return have_error
+    in_memory_result = None
+    if isinstance(destination, SerialDestination):
+        in_memory_result = destination.get_data()
+    return have_error, in_memory_result
+
+
+class PipelineRunnerSeq:
+
+    def __init__(self, input_queue, output_queue=None):
+        self.input_queue = input_queue
+        self.output_queue = output_queue
+        print("DEBUG: initialized PipelineRunnerSeq", file=sys.stderr)
+
+    def __call__(self, pipeline, **kwargs):
+        logger = logging.getLogger(__name__ + ".PipelineRunnerSeq")
+        logger.setLevel(logging.DEBUG)
+        streamhandler = logging.StreamHandler(stream=sys.stderr)
+        formatter = logging.Formatter(
+            '%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
+        streamhandler.setFormatter(formatter)
+        logger.addHandler(streamhandler)
+        logger.debug("Started PipelineRunnerSeq")
+        n_total = 0
+        n_nok = 0
+        # if we get a tuple where id and item are None, we immediately end reading the
+        # queue! Even if there is no data for us at all, we should always at least get that end of work signal!
+        while True:
+            logger.debug("Reading from input queue")
+            id, item = self.input_queue.get()
+            logger.debug("Got from input queue id={}".format(id))
+            if id is None:
+                break
+            n_total += 1
+            try:
+                kwargs["id"] = id
+                logger.debug("Running the pipeline on id {} item {}".format(id, item))
+                item = run_pipeline_on(pipeline, item, **kwargs)
+                logger.debug("Run pipeline item is now {}".format(item))
+                if self.output_queue is not None:
+                    logger.debug("Writing to output queue id {} item {}".format(id, item))
+                    self.output_queue.put((id, item))
+            except Exception as ex:
+                logger.error("Error processing item {} in process {}: {}".format(id, kwargs["pid"], ex))
+                n_nok += 1
+        logger.debug("Writing to output queue None")
+        self.output_queue.put((None, None))
+        # TODO: we should return the results lists from the PRs that produce results here somehow
+        return n_total, n_nok
 
 
 class SequenceProcessor(Processor):
@@ -150,16 +225,23 @@ class SequenceProcessor(Processor):
         NOTE: not yet implemented!!!
         """
         import collections
-        if isinstance(source, collections.Iterator):
+        if isinstance(source, collections.Iterator) or isinstance(source, collections.Iterable):
             self.source = source
         else:
-            raise Exception("Source must be a SerialSource or any Iterator")
+            raise Exception("Source must be a SerialSource or any Iterator or Iterable")
         if nprocesses > 0:
             self.nprocesses = nprocesses
         elif nprocesses == 0:
             self.nprocesses = multiprocessing.cpu_count()
         else:
             self.nprocesses = min(multiprocessing.cpu_count(), abs(nprocesses))
+        # if we use multiprocessing, check if the pipeline can be pickled!
+        if self.nprocesses != 1:
+            import pickle
+            try:
+                tmp = pickle.dumps(pipeline)
+            except Exception as ex:
+                raise Exception("Pipeline cannot be pickled, cannot use multiprocessing, error: {}".format(ex))
         self.pipeline = pipeline
         if hasattr(destination, "write") and callable(destination.write):
             pass
@@ -171,40 +253,6 @@ class SequenceProcessor(Processor):
         self.runtimeargs = runtimeargs
         self.use_destination_tuple = use_destination_tuple
 
-    def _make_pipeline_runner(self, input_queue, output_queue=None):
-        """
-        Create a closure for retrieving items from a queue and running the pipipeline
-        on them and optionally sending the result to another queue
-        :return: function to be used for running the pipeline
-        """
-        def pipeline_runner_seq(pipeline, **kwargs):
-            """
-            The actual function to run the pipeline
-            :param pipeline:
-            :return:
-            """
-            logger = logging.getLogger(__name__)
-            logger.setLevel(logging.INFO)
-            streamhandler = logging.StreamHandler(stream=sys.stderr)
-            formatter = logging.Formatter(
-                '%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
-            streamhandler.setFormatter(formatter)
-            logger.addHandler(streamhandler)
-            n_total = 0
-            n_nok = 0
-            for id, item in input_queue:
-                n_total += 1
-                try:
-                    kwargs["id"] = id
-                    item = run_pipeline_on(pipeline, item, **kwargs)
-                    if output_queue is not None:
-                        output_queue.put((id, item))
-                except Exception as ex:
-                    logger.error("Error processing item {} in process {}: {}".format(id, kwargs["pid"], ex))
-                    n_nok += 1
-            return n_total, n_nok
-        return pipeline_runner_seq()
-
     def run(self):
         """
         Actually runs the pipeline over all the data. Returns a tuple of number of items processed
@@ -213,7 +261,7 @@ class SequenceProcessor(Processor):
         """
         n_total = 0
         n_nok = 0
-        if self.processes == 1:
+        if self.nprocesses == 1:
             # just run everything directly in here, no multiprocessing
             for id, item in enumerate(self.source):
                 n_total += 1
@@ -223,8 +271,15 @@ class SequenceProcessor(Processor):
                     logger.error("Error processing item {}: {}".format(id, ex))
                     n_nok += 1
                 # now if there is a destination, pass it on to there
+                writer_error = False
                 if self.destination:
-                    self.destination.write(item, id=id)
+                    # TODO: catch writer error!
+                    if self.use_destination_tuple:
+                        self.destination.write((id, item))
+                    else:
+                        self.destination.write(item)
+            # TODO: instead of the for loop, use something that allows to trap reader error
+            return n_total, n_nok, False, False
         else:
             # ok, do the actual multiprocessing
             # first, check if the pipeline contains any Pr which is single process only
@@ -236,19 +291,24 @@ class SequenceProcessor(Processor):
             kw["nprocesses"] = self.nprocesses
             kw.update(self.runtimeargs)
             rets = []
-            input_queue = Queue(maxsize=self.maxsize_iqeueue)
+            # TODO: should all queues come from the same manager instance or different ones??
+            mgr = multiprocessing.Manager()
+            input_queue = mgr.Queue(maxsize=self.maxsize_iqeueue)
             reader_pool = Pool(1)
-            reader_pool_ret = pool.apply_async(source_reader, (input_queue, self.source), **kw)
+            logger.debug("Running reader pool apply async")
+            reader_pool_ret = pool.apply_async(source_reader, [input_queue, self.source, self.nprocesses], kw)
             output_queue = None
             if self.destination is not None:
-                output_queue = Queue(maxsize=self.maxsize_oqeueue)
+                output_queue = mgr.Queue(maxsize=self.maxsize_oqeueue)
                 writer_pool = Pool(1)
-                writer_pool_ret = pool.apply_async(destination_writer, (output_queue, self.destination), **kw)
-            pipeline_runner = self._make_pipeline_runner(input_queue, output_queue)
+                logger.debug("Running writer pool apply async")
+                writer_pool_ret = pool.apply_async(destination_writer, [output_queue, self.destination, self.nprocesses], kw)
+            pipeline_runner = PipelineRunnerSeq(input_queue, output_queue)
             for i in range(self.nprocesses):
                 # logger.info("Starting process {}".format(i))
                 kw["pid"] = i
                 tmpkw = kw.copy()
+                logger.debug("Running worker pool process {} apply async".format(i))
                 ret = pool.apply_async(pipeline_runner, (self.pipeline,), tmpkw)
                 rets.append(ret)
             # now wait for the processes and pool to finish
@@ -261,12 +321,16 @@ class SequenceProcessor(Processor):
             if self.destination:
                 writer_pool.close()
                 writer_pool.join()
-                writer_error = writer_pool_ret.get()
+                writer_error, d = writer_pool_ret.get()
+                if isinstance(self.destination, SerialDestination) and d is not None:
+                    self.destination.set_data(d)
             # actually get the total values for n_total and n_nok from the per-process results
-            for r in ret:
-                n_total += r[0].get()
-                n_nok += r[1].get()
-        return n_total, n_nok, reader_error, writer_error
+
+            for r in rets:
+                rval = r.get()
+                n_total += rval[0]
+                n_nok += rval[1]
+            return n_total, n_nok, reader_error, writer_error
 
 
 class DatasetProcessor(Processor):
@@ -346,7 +410,7 @@ class DatasetProcessor(Processor):
                     logger.error("Error processing item {} in process {}: {}".format(id, kwargs["pid"], ex))
                     n_nok += 1
             return n_total, n_nok
-        return pipeline_runner_dataset()
+        return pipeline_runner_dataset
 
     def run(self):
         """
@@ -380,9 +444,9 @@ class DatasetProcessor(Processor):
             rets = []
             output_queue = None
             if self.destination is not None:
-                output_queue = Queue(maxsize=self.maxsize_oqeueue)
+                output_queue = multiprocessing.Manager().Queue(maxsize=self.maxsize_oqeueue)
                 writer_pool = Pool(1)
-                writer_pool_ret = pool.apply_async(destination_writer, (output_queue, self.destination), **kw)
+                writer_pool_ret = pool.apply_async(destination_writer, (output_queue, self.destination), kw)
             pipeline_runner = self._make_pipeline_runner(self.dataset, output_queue)
             for i in range(self.nprocesses):
                 # logger.info("Starting process {}".format(i))
@@ -399,9 +463,10 @@ class DatasetProcessor(Processor):
                 writer_pool.join()
                 writer_error = writer_pool_ret.get()
             # actually get the total values for n_total and n_nok from the per-process results
-            for r in ret:
-                n_total += r[0].get()
-                n_nok += r[1].get()
+            for r in rets:
+                rval = r.get()
+                n_total += rval[0]
+                n_nok += rval[1]
         return n_total, n_nok, writer_error
 
 

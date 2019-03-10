@@ -25,6 +25,7 @@ class ProcessingResource(ABC):
     def __call__(self, item, **kwargs):
         pass
 
+
     # Note: the following function is defined so it can be used as a normal instance function
     # and like a static function for the class: the parameter is either self, for an instance
     # of a pipeline if called as static function.

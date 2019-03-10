@@ -15,6 +15,9 @@ class SerialDestination(ABC):
     Base class for all implementations of something that needs serial writing.
     """
 
+    def __init__(self):
+        self.data = None
+
     @abstractmethod
     def write(self, item):
         """
@@ -37,7 +40,16 @@ class SerialDestination(ABC):
         For other kinds of destination, this could return None or whatever makes sense.
         :return:
         """
-        return None
+        return self.data
+
+    def set_data(self, data):
+        """
+        This can be used to set the data in the original instance if a copy of the instance was used
+        in a different process to create the data.
+        :param data: the data to set
+        :return:
+        """
+        self.data = data
 
     def size(self):
         """
@@ -77,17 +89,15 @@ class SdList(SerialDestination):
     def __init__(self, thelist):
         if not isinstance(thelist, list):
             raise Exception("Must be a list")
-        self.thelist = thelist
-        self.n = 0
+        self.data = thelist
 
     def write(self, item):
-        self.thelist.append(item)
+        import sys
+        print("DEBUG: appending {} is now {}".format(item, self.data), file=sys.stderr)
+        self.data.append(item)
 
     def size(self):
-        return self.n
-
-    def get_data(self):
-        return self.thelist
+        return len(self.n)
 
 
 class SdMap(SerialDestination):
@@ -99,16 +109,13 @@ class SdMap(SerialDestination):
     def __init__(self, themap):
         if not isinstance(themap, map):
             raise Exception("Must be a map")
-        self.themap = themap
-        self.n = 0
+        self.data = themap
 
     def write(self, item):
         if not isinstance(item, tuple) or not len(item) == 2:
             raise Exception("write must get a tuple (id, item) instead of item!")
-        self.themap[item[0]] = item[1]
+        self.data[item[0]] = item[1]
 
     def size(self):
-        return self.n
+        return len(self.data)
 
-    def get_data(self):
-        return self.themap
