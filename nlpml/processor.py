@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 '''
+Classes and functions for dealing with processing items with a pipeline where the processing
+is optionally done in parallel using multiprocessing.
 '''
 
 # NOTES: a processor is something that processes items by running those items through a
@@ -23,10 +25,8 @@
 
 from abc import ABC, abstractmethod
 from processingresources import ProcessingResource
-import json
-from multiprocessing import Pool, Queue, Process
-from destination import SerialDestination
-from source import SerialSource
+from multiprocessing import Pool, Queue
+import multiprocessing
 import logging
 import sys
 
@@ -88,7 +88,7 @@ def source_reader(iqueue, source, **kwargs):
     return have_error
 
 
-def destination_writer(oqueue, destination, **kwargs):
+def destination_writer(oqueue, destination, use_destination_tuple=False, **kwargs):
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
     streamhandler = logging.StreamHandler(stream=sys.stderr)
@@ -99,7 +99,10 @@ def destination_writer(oqueue, destination, **kwargs):
     have_error = False
     try:
         for id, item in oqueue:
-            destination.write(item, id=id)
+            if use_destination_tuple:
+                destination.write((id, item))
+            else:
+                destination.write(item)
         if hasattr(destination, "close") and callable(destination.close):
             destination.close()
     except Exception as ex:
@@ -114,7 +117,8 @@ class SequenceProcessor(Processor):
     Optionally can send data back to a serial destination.
     """
 
-    def __init__(self, source, nprocesses=1, pipeline=None, destination=None, maxsize_iqueue=10,
+    def __init__(self, source, nprocesses=1, pipeline=None,
+                 destination=None, use_destination_tuple=False, maxsize_iqueue=10,
                  maxsize_oqueue=10, runtimeargs={}):
         """
         Process some serial access source and optionally send the processed items to
@@ -122,20 +126,38 @@ class SequenceProcessor(Processor):
         :param source: anything that can be iterated over or a SerialSource object
         (an instance of collections.Iterator). If the object has a "close" attribute that
         is callable, it is closed when the iterator is exhausted.
+        :param nprocesses: number of processes to run in parallel. If 1, no multiprocessing code is used. If 0,
+        uses as many processes as there are CPUs. If < 0, use as many processes as there are cpus, but at most
+        abs(nprocesses).
         :param pipeline: the processing pipeline, a single Pr or a list of Prs
-        :param destination: a SerialDestination object
-        :param runtimeargs: a dictionary of kwargs to pass on to the Prs
+        :param destination: a SerialDestination object or anything that implements write and optionally close.
+        :param use_destination_tuple: if True, send the tuple (id, item) to the write function of the destination
+        instead of just item.
+        :param maxsize_iqueue: the maximum number of items to put into the input queue before locking
+        :param maxsize_oqueue: the maximum number of items to put into the output queue before locking
+        :param runtimeargs: a dictionary of kwargs to add to the kwargs passed on to the Prs
         """
         import collections
         if isinstance(source, collections.Iterator):
             self.source = source
         else:
-            raise Exception("Source must be an Iterator")
-        self.processes = nprocesses
+            raise Exception("Source must be a SerialSource or any Iterator")
+        if nprocesses > 0:
+            self.nprocesses = nprocesses
+        elif nprocesses == 0:
+            self.nprocesses = multiprocessing.cpu_count()
+        else:
+            self.nprocesses = min(multiprocessing.cpu_count(), abs(nprocesses))
         self.pipeline = pipeline
+        if hasattr(destination, "write") and callable(destination.write):
+            pass
+        else:
+            raise Exception("Destination must be a SerialDestination instance or implement write(item) and optional close()")
         self.destination = destination
         self.maxsize_iqeueue = maxsize_iqueue
         self.maxsize_oqeueue = maxsize_oqueue
+        self.runtimeargs = runtimeargs
+        self.use_destination_tuple = use_destination_tuple
 
     def _make_pipeline_runner(self, input_queue, output_queue=None):
         """
@@ -235,7 +257,7 @@ class SequenceProcessor(Processor):
 class DatasetProcessor(Processor):
     """
     For processing items from a Dataset, where accessing each item is independent
-    of any other item.
+    of any other item. Each item can optionally be sent to a serial destination.
     """
 
     def __init__(self, dataset, destination=None):
