@@ -1,3 +1,8 @@
+#!/usr/bin/env python
+"""
+Tests.
+"""
+
 import unittest
 import logging
 import sys
@@ -142,3 +147,5 @@ class TestProcessorDataset1(unittest.TestCase):
         # logger.info("destination get_data is {}".format(dest1.get_data()))
         assert sorted(dest1.get_data()) == target
 
+if __name__ == "__main__":
+    unittest.main()
