@@ -95,6 +95,7 @@ class TestProcessorSeq1(unittest.TestCase):
         # logger.info("destination get_data is {}".format(dest1.get_data()))
         assert sorted(dest1.get_data()) == target
 
+
 class TestProcessorDataset1(unittest.TestCase):
 
     def test_serial1(self):
