@@ -52,7 +52,7 @@ class TestProcessingResources1(unittest.TestCase):
         assert ProcessingResource.supports_multiprocessing(pipeline) == True
 
 
-class TestProcessor1(unittest.TestCase):
+class TestProcessorSeq1(unittest.TestCase):
 
     def test_serial1(self):
         from processor import SequenceProcessor
@@ -92,6 +92,52 @@ class TestProcessor1(unittest.TestCase):
         proc = SequenceProcessor(source, nprocesses=3, pipeline=pipeline, destination=dest1, maxsize_iqueue=1, maxsize_oqueue=1)
         ret = proc.run()
         assert ret == (100, 0, False, False)
+        # NOTE: results may not be in order, this is ok!
+        # logger.info("destination get_data is {}".format(dest1.get_data()))
+        assert sorted(dest1.get_data()) == target
+
+class TestProcessorDataset1(unittest.TestCase):
+
+    def test_serial1(self):
+        from processor import DatasetProcessor
+        from dataset import ListDataset
+        from destination import SdList
+        data = list(range(100))
+        ds = ListDataset(data)
+        target = [(x+1)*3 for x in data]
+        results = []
+        dest1 = SdList(results)
+        pr1 = PrCallFunction(plus1)
+        pr2 = PrCallFunction(times3)
+        pipeline = [pr1, pr2]
+        proc = DatasetProcessor(ds, nprocesses=1, pipeline=pipeline, destination=dest1)
+        ret = proc.run()
+        assert ret == (100, 0, False)
+        # logger.info("destination get_data is {}".format(dest1.get_data()))
+        assert dest1.get_data() == target
+
+        results = []
+        dest1 = SdList(results)
+        proc = DatasetProcessor(ds, nprocesses=1, pipeline=None, destination=dest1)
+        ret = proc.run()
+        assert ret == (100, 0, False)
+        # logger.info("destination get_data is {}".format(dest1.get_data()))
+        assert dest1.get_data() == data
+
+        results = []
+        dest1 = SdList(results)
+        proc = DatasetProcessor(ds, nprocesses=3, pipeline=pipeline, destination=dest1)
+        ret = proc.run()
+        assert ret == (100, 0, False)
+        # NOTE: results may not be in order, this is ok!
+        # logger.info("destination get_data is {}".format(dest1.get_data()))
+        assert sorted(dest1.get_data()) == target
+
+        results = []
+        dest1 = SdList(results)
+        proc = DatasetProcessor(ds, nprocesses=3, pipeline=pipeline, destination=dest1, maxsize_oqueue=1)
+        ret = proc.run()
+        assert ret == (100, 0, False)
         # NOTE: results may not be in order, this is ok!
         # logger.info("destination get_data is {}".format(dest1.get_data()))
         assert sorted(dest1.get_data()) == target

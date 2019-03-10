@@ -33,6 +33,20 @@ class ExtendedDataset(object):
         raise Exception("Dataset is not writable!")
 
 
+class ListDataset(ExtendedDataset):
+
+    def __init__(self, thelist):
+        super().__init__()
+        if not isinstance(thelist, list):
+            raise Exception("Need a list!")
+        self.data = thelist
+
+    def __getitem__(self, key):
+        return self.data[key]
+
+    def __len__(self):
+        return len(self.data)
+
 class ShuffledDataset(ExtendedDataset):
     """
     Represents a shuffled version of another dataset.
@@ -216,6 +230,7 @@ class DirFilesDataset(ExtendedDataset):
         :param files_exist: if True, all files must already exist, if False, this is mainly for
           use as a cache.
         """
+        import torch
         self.directory = directory
         self.is_writable = True
         self.basenames = basenames
@@ -254,6 +269,7 @@ class DirFilesDataset(ExtendedDataset):
         return self.len
 
     def __getitem__(self, index):
+        import torch
         fpath = self.path4(index)
         if self.as_format == "json":
             with open(fpath, "rt", encoding="utf8") as reader:
@@ -266,6 +282,7 @@ class DirFilesDataset(ExtendedDataset):
                 return torch.load(reader, map_location="cpu")
 
     def __setitem__(self, index, value):
+        import torch
         fpath = self.path4(index)
         fname = "{}.{}".format(str(index), self.as_format)
         fpath = os.path.join(self.directory, fname)

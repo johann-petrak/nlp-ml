@@ -148,7 +148,8 @@ class PipelineRunnerSeq:
         self.output_queue = output_queue
 
     def __call__(self, pipeline, **kwargs):
-        logger = logging.getLogger(__name__ + ".PipelineRunnerSeq")
+        pid = kwargs["pid"]
+        logger = logging.getLogger(__name__ + ".PipelineRunnerSeq."+str(pid))
         logger.debug("Started PipelineRunnerSeq")
         n_total = 0
         n_nok = 0
@@ -186,14 +187,14 @@ class PipelineRunnerDataset:
 
     def __call__(self, pipeline, **kwargs):
         pid = kwargs["pid"]
-        logger = logging.getLogger(__name__ + ".PipelineRunnerDataset."+pid)
+        logger = logging.getLogger(__name__ + ".PipelineRunnerDataset."+str(pid))
         logger.debug("Started PipelineRunnerDataset")
         n_total = 0
         n_nok = 0
 
         # iterate over just the items in the dataset we are interested in, depending on pid
         nprocesses = kwargs["nprocesses"]
-        size = self.dataset.size()
+        size = len(self.dataset)
         for id in range(pid, size, nprocesses):
             logger.debug("Getting dataset item id={}".format(id))
             item = self.dataset[id]
@@ -336,7 +337,7 @@ class SequenceProcessor(Processor):
             # a separate process!
             writer_error = False
             if self.destination is not None:
-                logger.info("Calling destination writer with {} {} {} {}".format(output_queue, self.destination, self.nprocesses, kw))
+                logger.debug("Calling destination writer with {} {} {} {}".format(output_queue, self.destination, self.nprocesses, kw))
                 writer_error = destination_writer(output_queue, self.destination, **kw)
 
             pool.close()
@@ -374,6 +375,8 @@ class DatasetProcessor(Processor):
         :param maxsize_oqueue: the maximum number of items to put into the output queue before locking
         :param runtimeargs: a dictionary of kwargs to add to the kwargs passed on to the Prs
         """
+        # logging.getLogger(__name__).setLevel(logging.DEBUG)
+        self.dataset = dataset
         if nprocesses > 0:
             self.nprocesses = nprocesses
         elif nprocesses == 0:
@@ -423,7 +426,7 @@ class DatasetProcessor(Processor):
                     else:
                         self.destination.write(item)
             # TODO: instead of the for loop, use something that allows to trap reader error
-            return n_total, n_nok, False, False
+            return n_total, n_nok, False
         else:
             # ok, do the actual multiprocessing
             # first, check if the pipeline contains any Pr which is single process only
@@ -448,7 +451,7 @@ class DatasetProcessor(Processor):
                 rets.append(ret)
             writer_error = False
             if self.destination is not None:
-                logger.info("Calling destination writer with {} {} {} {}".format(output_queue, self.destination, self.nprocesses, kw))
+                logger.debug("Calling destination writer with {} {} {} {}".format(output_queue, self.destination, self.nprocesses, kw))
                 writer_error = destination_writer(output_queue, self.destination, **kw)
             pool.close()
             pool.join()
