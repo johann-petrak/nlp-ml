@@ -93,7 +93,6 @@ class SdList(SerialDestination):
 
     def write(self, item):
         import sys
-        print("DEBUG: appending {} is now {}".format(item, self.data), file=sys.stderr)
         self.data.append(item)
 
     def size(self):

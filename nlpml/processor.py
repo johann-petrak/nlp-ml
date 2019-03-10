@@ -45,7 +45,7 @@ import logging
 import sys
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 streamhandler = logging.StreamHandler(stream=sys.stderr)
 formatter = logging.Formatter(
                 '%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
@@ -86,17 +86,10 @@ def run_pipeline_on(pipeline, item, **kwargs):
 def source_reader(*args, **kwargs):
     iqueue, source, nprocesses = args
     logger = logging.getLogger(__name__+".source_reader")
-    logger.setLevel(logging.DEBUG)
-    streamhandler = logging.StreamHandler(stream=sys.stderr)
-    formatter = logging.Formatter(
-        '%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
-    streamhandler.setFormatter(formatter)
-    logger.addHandler(streamhandler)
     logger.debug("Called with {}".format(args))
     have_error = False
     try:
         for id, item in enumerate(source):
-            print("Writing to iqueue id={}".format(id), file=sys.stderr)
             logger.debug("Writing to input queue id={}".format(id))
             iqueue.put((id, item))
         if hasattr(source, "close") and callable(source.close):
@@ -107,7 +100,6 @@ def source_reader(*args, **kwargs):
     # in order to signal that we are finished we send tuples with None, None over the queue, one for each
     # of the worker processes
     for i in range(nprocesses):
-        print("Writing to iqueue id={}".format(None), file=sys.stderr)
         logger.debug("Writing to input queue id={}".format(None))
         iqueue.put((None, None))
     return have_error
@@ -116,12 +108,6 @@ def source_reader(*args, **kwargs):
 def destination_writer(*args, use_destination_tuple=False, **kwargs):
     oqueue, destination, nprocesses = args
     logger = logging.getLogger(__name__+".destination_writer")
-    logger.setLevel(logging.DEBUG)
-    streamhandler = logging.StreamHandler(stream=sys.stderr)
-    formatter = logging.Formatter(
-        '%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
-    streamhandler.setFormatter(formatter)
-    logger.addHandler(streamhandler)
     logger.debug("Called with {}".format(args))
     have_error = False
     try:
@@ -157,16 +143,9 @@ class PipelineRunnerSeq:
     def __init__(self, input_queue, output_queue=None):
         self.input_queue = input_queue
         self.output_queue = output_queue
-        print("DEBUG: initialized PipelineRunnerSeq", file=sys.stderr)
 
     def __call__(self, pipeline, **kwargs):
         logger = logging.getLogger(__name__ + ".PipelineRunnerSeq")
-        logger.setLevel(logging.DEBUG)
-        streamhandler = logging.StreamHandler(stream=sys.stderr)
-        formatter = logging.Formatter(
-            '%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
-        streamhandler.setFormatter(formatter)
-        logger.addHandler(streamhandler)
         logger.debug("Started PipelineRunnerSeq")
         n_total = 0
         n_nok = 0
@@ -259,6 +238,7 @@ class SequenceProcessor(Processor):
         in total, and number of items that had some error.
         :return: a tuple, total number of items, items with error, if reader had errors, if writer had errors
         """
+        logger = logging.getLogger(__name__+".SequenceProcessor.run")
         n_total = 0
         n_nok = 0
         if self.nprocesses == 1:

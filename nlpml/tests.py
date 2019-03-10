@@ -56,7 +56,8 @@ class TestProcessor1(unittest.TestCase):
     def test_serial1(self):
         from processor import SequenceProcessor
         from destination import SdList
-        source = [1, 2, 3, 4, 5]
+        source = list(range(100))
+        target = [(x+1)*3 for x in source]
         results = []
         dest1 = SdList(results)
         pr1 = PrCallFunction(plus1)
@@ -64,24 +65,29 @@ class TestProcessor1(unittest.TestCase):
         pipeline = [pr1, pr2]
         proc = SequenceProcessor(source, nprocesses=1, pipeline=pipeline, destination=dest1)
         ret = proc.run()
-        assert ret == (5, 0, False, False)
-        assert dest1.get_data() == [6, 9, 12, 15, 18]
+        assert ret == (100, 0, False, False)
+        assert dest1.get_data() == target
 
         results = []
         dest1 = SdList(results)
         proc = SequenceProcessor(source, nprocesses=1, pipeline=None, destination=dest1)
         ret = proc.run()
-        assert ret == (5, 0, False, False)
-        logger.info("Result is {}".format(results))
-        assert dest1.get_data() == [1, 2, 3, 4, 5]
+        assert ret == (100, 0, False, False)
+        assert dest1.get_data() == source
 
         results = []
         dest1 = SdList(results)
         proc = SequenceProcessor(source, nprocesses=3, pipeline=pipeline, destination=dest1)
         ret = proc.run()
-        assert ret == (5, 0, False, False)
-        logger.info("Result is {}".format(results))
-        assert ret == (5, 0, False, False)
-        logger.info("destination get_data is {}".format(dest1.get_data()))
-        assert dest1.get_data() == [6, 9, 12, 15, 18]
+        assert ret == (100, 0, False, False)
+        # logger.info("destination get_data is {}".format(dest1.get_data()))
+        assert dest1.get_data() == target
+
+        results = []
+        dest1 = SdList(results)
+        proc = SequenceProcessor(source, nprocesses=3, pipeline=pipeline, destination=dest1, maxsize_iqueue=1, maxsize_oqueue=1)
+        ret = proc.run()
+        assert ret == (100, 0, False, False)
+        # logger.info("destination get_data is {}".format(dest1.get_data()))
+        assert dest1.get_data() == target
 
