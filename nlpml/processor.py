@@ -138,10 +138,7 @@ def destination_writer(oqueue, destination, use_destination_tuple=False, **kwarg
     except Exception as ex:
         logger.error("Error in destination_writer: {}".format(ex))
         have_error = True
-    in_memory_result = None
-    if isinstance(destination, SerialDestination):
-        in_memory_result = destination.get_data()
-    return have_error, in_memory_result
+    return have_error
 
 
 class PipelineRunnerSeq:
@@ -178,6 +175,43 @@ class PipelineRunnerSeq:
         logger.debug("Writing to output queue None")
         self.output_queue.put((None, None))
         # TODO: we should return the results lists from the PRs that produce results here somehow
+        return n_total, n_nok
+
+
+class PipelineRunnerDataset:
+
+    def __init__(self, dataset, output_queue=None):
+        self.dataset = dataset
+        self.output_queue = output_queue
+
+    def __call__(self, pipeline, **kwargs):
+        pid = kwargs["pid"]
+        logger = logging.getLogger(__name__ + ".PipelineRunnerDataset."+pid)
+        logger.debug("Started PipelineRunnerDataset")
+        n_total = 0
+        n_nok = 0
+
+        # iterate over just the items in the dataset we are interested in, depending on pid
+        nprocesses = kwargs["nprocesses"]
+        size = self.dataset.size()
+        for id in range(pid, size, nprocesses):
+            logger.debug("Getting dataset item id={}".format(id))
+            item = self.dataset[id]
+            logger.debug("Got item id={}".format(id))
+            n_total += 1
+            try:
+                kwargs["id"] = id
+                logger.debug("Running the pipeline on id {} item {}".format(id, item))
+                item = run_pipeline_on(pipeline, item, **kwargs)
+                logger.debug("Run pipeline item is now {}".format(item))
+                if self.output_queue is not None:
+                    logger.debug("Writing to output queue id {} item {}".format(id, item))
+                    self.output_queue.put((id, item))
+            except Exception as ex:
+                logger.error("Error processing item {} in process {}: {}".format(id, kwargs["pid"], ex))
+                n_nok += 1
+        logger.debug("Writing to output queue None")
+        self.output_queue.put((None, None))
         return n_total, n_nok
 
 
@@ -300,22 +334,16 @@ class SequenceProcessor(Processor):
             # now wait for the processes and pool to finish
             # TODO If we have a destination, we could actually do the processing for that one right here instead of
             # a separate process!
+            writer_error = False
             if self.destination is not None:
                 logger.info("Calling destination writer with {} {} {} {}".format(output_queue, self.destination, self.nprocesses, kw))
-                destination_writer(output_queue, self.destination, **kw)
+                writer_error = destination_writer(output_queue, self.destination, **kw)
 
             pool.close()
             pool.join()
             reader_pool.close()
             reader_pool.join()
             reader_error = reader_pool_ret.get()
-            writer_error = False
-            #if self.destination:
-            #    writer_pool.close()
-            #    writer_pool.join()
-            #    writer_error, d = writer_pool_ret.get()
-            #    if isinstance(self.destination, SerialDestination) and d is not None:
-            #        self.destination.set_data(d)
 
             for r in rets:
                 rval = r.get()
@@ -346,13 +374,19 @@ class DatasetProcessor(Processor):
         :param maxsize_oqueue: the maximum number of items to put into the output queue before locking
         :param runtimeargs: a dictionary of kwargs to add to the kwargs passed on to the Prs
         """
-        self.dataset = dataset
         if nprocesses > 0:
             self.nprocesses = nprocesses
         elif nprocesses == 0:
             self.nprocesses = multiprocessing.cpu_count()
         else:
             self.nprocesses = min(multiprocessing.cpu_count(), abs(nprocesses))
+        # if we use multiprocessing, check if the pipeline can be pickled!
+        if pipeline is not None and self.nprocesses != 1:
+            import pickle
+            try:
+                tmp = pickle.dumps(pipeline)
+            except Exception as ex:
+                raise Exception("Pipeline cannot be pickled, cannot use multiprocessing, error: {}".format(ex))
         self.pipeline = pipeline
         if hasattr(destination, "write") and callable(destination.write):
             pass
@@ -363,55 +397,16 @@ class DatasetProcessor(Processor):
         self.runtimeargs = runtimeargs
         self.use_destination_tuple = use_destination_tuple
 
-    def _make_pipeline_runner(self, dataset, output_queue=None):
-        """
-        Create a closure for retrieving a subset of items from a dataset and running the pipipeline
-        on them and optionally sending the result to another queue. The subset of items for each runner
-        is the set whre the item indexes are modulo processid.
-        :return: function to be used for running the pipeline
-        """
-        def pipeline_runner_dataset(pipeline, **kwargs):
-            """
-            The actual function to run the pipeline
-            :param pipeline:
-            :return:
-            """
-            logger = logging.getLogger(__name__)
-            logger.setLevel(logging.INFO)
-            streamhandler = logging.StreamHandler(stream=sys.stderr)
-            formatter = logging.Formatter(
-                '%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
-            streamhandler.setFormatter(formatter)
-            logger.addHandler(streamhandler)
-            n_total = 0
-            n_nok = 0
-            # iterate over just the items in the dataset we are interested in, depending on pid
-            pid = kwargs["pid"]
-            nprocesses = kwargs["nprocesses"]
-            size = self.dataset.size()
-            for id in range(pid, size, nprocesses):
-                item = dataset[id]
-                n_total += 1
-                try:
-                    kwargs["id"] = id
-                    item = run_pipeline_on(pipeline, item, **kwargs)
-                    if output_queue is not None:
-                        output_queue.put((id, item))
-                except Exception as ex:
-                    logger.error("Error processing item {} in process {}: {}".format(id, kwargs["pid"], ex))
-                    n_nok += 1
-            return n_total, n_nok
-        return pipeline_runner_dataset
-
     def run(self):
         """
         Actually runs the pipeline over the dataset. Returns a tuple of number of items processed
         in total, and number of items that had some error.
         :return: a tuple, total number of items, items with error, if writer had errors (or None if no destination)
         """
+        logger = logging.getLogger(__name__+".DatasetProcessor.run")
         n_total = 0
         n_nok = 0
-        if self.processes == 1:
+        if self.nprocesses == 1:
             # just run everything directly in here, no multiprocessing
             for id, item in enumerate(self.dataset):
                 n_total += 1
@@ -422,8 +417,15 @@ class DatasetProcessor(Processor):
                     n_nok += 1
                 # now if there is a destination, pass it on to there
                 if self.destination:
-                    self.destination.write(item, id=id)
+                    # TODO: catch writer error!
+                    if self.use_destination_tuple:
+                        self.destination.write((id, item))
+                    else:
+                        self.destination.write(item)
+            # TODO: instead of the for loop, use something that allows to trap reader error
+            return n_total, n_nok, False, False
         else:
+            # ok, do the actual multiprocessing
             # first, check if the pipeline contains any Pr which is single process only
             if not ProcessingResource.supports_multiprocessing(self.pipeline):
                 raise Exception("Cannot run multiprocessing, pipeline contains single processing PR")
@@ -433,31 +435,25 @@ class DatasetProcessor(Processor):
             kw["nprocesses"] = self.nprocesses
             kw.update(self.runtimeargs)
             rets = []
-            output_queue = None
+            mgr = multiprocessing.Manager()
             if self.destination is not None:
-                output_queue = multiprocessing.Manager().Queue(maxsize=self.maxsize_oqeueue)
-                writer_pool = Pool(1)
-                writer_pool_ret = pool.apply_async(destination_writer, (output_queue, self.destination), kw)
-            pipeline_runner = self._make_pipeline_runner(self.dataset, output_queue)
+                output_queue = mgr.Queue(maxsize=self.maxsize_oqeueue)
+            pipeline_runner = PipelineRunnerDataset(self.dataset, output_queue)
             for i in range(self.nprocesses):
                 # logger.info("Starting process {}".format(i))
                 kw["pid"] = i
                 tmpkw = kw.copy()
+                logger.debug("Running worker pool process {} apply async".format(i))
                 ret = pool.apply_async(pipeline_runner, (self.pipeline,), tmpkw)
                 rets.append(ret)
-            # now wait for the processes and pool to finish
+            writer_error = False
+            if self.destination is not None:
+                logger.info("Calling destination writer with {} {} {} {}".format(output_queue, self.destination, self.nprocesses, kw))
+                writer_error = destination_writer(output_queue, self.destination, **kw)
             pool.close()
             pool.join()
-            writer_error = False
-            if self.destination:
-                writer_pool.close()
-                writer_pool.join()
-                writer_error = writer_pool_ret.get()
-            # actually get the total values for n_total and n_nok from the per-process results
             for r in rets:
                 rval = r.get()
                 n_total += rval[0]
                 n_nok += rval[1]
-        return n_total, n_nok, writer_error
-
-
+            return n_total, n_nok, writer_error
