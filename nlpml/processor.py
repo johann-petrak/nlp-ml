@@ -23,6 +23,18 @@ is optionally done in parallel using multiprocessing.
 #   Finally this processor can also have a serial destination writer component for putting
 #   the items back into e.g. a file. Order is not preserved!
 
+# Handling end of job and errors in multiprocessing mode:
+# * for the sequential processor, the source reader sends as many tuples with id=None as there are workers.
+#   Each worker immendiately terminates if it gets such a tuple on the queue
+# * If there is a destination, a worker that terminates sends a id=None tuple to the destination
+# * the destination counts the number of id=None tuples it gets and terminates if it is equal to the number of workers
+# * If the destination catches an error, the abortflag shared value is set to 1. All workers check that value and
+#   immediately terminate without sending anything to the destination queue.
+#   Also the source reader checks that flag and returns without sending the None tuple
+# * If a worker has to terminate because of maximum errors or unrecoverable error it sets the abort flag
+#   Again the reader and all other worker processes should terminate without sending anything.
+#   In addition the destination, if we have one, also checks that flag and immediately returns
+
 # TODO: figure out how to implement the "stoponerror" behaviour for multiprocessing.
 # E.g. the source iterator and the processing pool need to know when the destination processor
 # encountered an error and stop. How to communicate this to them?
@@ -32,6 +44,9 @@ is optionally done in parallel using multiprocessing.
 # per process and one of the processes regularly checking the sum of all those values.
 # Then if the sum exceeds the limit, that process updates a shared boolean value which gets
 # checked by all processes, if it is set, all of them terminate
+# First approach: stop on k errors per process, do not try to sum the errors up over processes!
+# Every process monitors its errors and sets the global flag, every process monitors the flag
+# and stops as soon as the flag is set.
 
 # TODO: change the way how pipelines work: a pipeline is just a special PR, never a list.
 # This can then be used to handle the problem of PRs calculating global stats:
@@ -45,8 +60,7 @@ is optionally done in parallel using multiprocessing.
 
 from abc import ABC, abstractmethod
 from processingresources import ProcessingResource
-from multiprocessing import Pool, Queue
-from destination import SerialDestination
+from multiprocessing import Pool, Value
 import multiprocessing
 import logging
 import sys
@@ -90,6 +104,15 @@ def run_pipeline_on(pipeline, item, **kwargs):
 
 
 def source_reader(iqueue, source, **kwargs):
+    """
+    Reads items from the source and sends them for processing via the iqueue (which is then read by the
+    actual worker processes). If we get an error while reading, this method terminates in the same way
+    as if end of source input would have been reached, but returns True.
+    :param iqueue: the queue to use to send the items to
+    :param source: the source to iterate over
+    :param kwargs: the kwargs set by the caller, this HAS to have the nprocesses arg set!
+    :return: False if no error, True if error encountered
+    """
     logger = logging.getLogger(__name__+".source_reader")
     nprocesses = kwargs["nprocesses"]
     logger.debug("Called with queue={}, source={}, nprocesses={}, kwargs={}".format(iqueue, source, nprocesses, kwargs))
@@ -112,33 +135,39 @@ def source_reader(iqueue, source, **kwargs):
 
 
 def destination_writer(oqueue, destination, use_destination_tuple=False, **kwargs):
+    """
+    Reads items from the oqueue and writes them to the destination. If we get an error during writing,
+    we pass the exception on to the caller which should abort the worker processes immediately.
+    :param oqueue: the queue that contains the items from the worker processes
+    :param destination: where to write the items to
+    :param use_destination_tuple: if True, writes the tuple (id, item) instead of just item
+    :param kwargs: the keyword arguments set by the caller this HAS to inclue nprocesses
+    :return:
+    """
     logger = logging.getLogger(__name__+".destination_writer")
     nprocesses = kwargs["nprocesses"]
     logger.debug("Called with queue={}, destination={}, nprocesses={}, kwargs={}".format(oqueue, destination, nprocesses, kwargs))
     have_error = False
-    try:
-        # Each of the processes in the pool is sending items, when they are out of items they send
-        # a tuple with two Nils.
-        # We have to retrieve all the nprocesses nil tuples in order to prevent the processes to potentially block
-        # when writing, so we make sure we exit only after we have seen all of them
-        n_none = 0
-        while n_none < nprocesses:
-            logger.debug("Reading from output queue")
-            id, item = oqueue.get()
-            logger.debug("Got from output queue: id={}".format(id))
-            if id is not None:
-                if use_destination_tuple:
-                    destination.write((id, item))
-                else:
-                    destination.write(item)
+    # NOTE: we do NOT catch any exceptions here so they bubble up to the caller!
+
+    # Each of the processes in the pool is sending items, when they are out of items they send
+    # a tuple with two Nils.
+    # We have to retrieve all the nprocesses nil tuples in order to prevent the processes to potentially block
+    # when writing, so we make sure we exit only after we have seen all of them
+    n_none = 0
+    while n_none < nprocesses:
+        logger.debug("Reading from output queue")
+        id, item = oqueue.get()
+        logger.debug("Got from output queue: id={}".format(id))
+        if id is not None:
+            if use_destination_tuple:
+                destination.write((id, item))
             else:
-                n_none += 1
-        if hasattr(destination, "close") and callable(destination.close):
-            destination.close()
-    except Exception as ex:
-        logger.error("Error in destination_writer: {}".format(ex))
-        have_error = True
-    return have_error
+                destination.write(item)
+        else:
+            n_none += 1
+    if hasattr(destination, "close") and callable(destination.close):
+        destination.close()
 
 
 class PipelineRunnerSeq:
@@ -148,15 +177,30 @@ class PipelineRunnerSeq:
         self.output_queue = output_queue
 
     def __call__(self, pipeline, **kwargs):
+        """
+        This is what gets executed by each worker of the SequentialProcessor. We read from the
+        input queue the items from the source and if there is an output queue, we send the processed
+        item there. After finishing, we send a special tuple with id None to the destination, if we have one.
+        This constantly checks the abortflag which will be set if there is an error in the destination writer.
+        If the flag indicates an error, we immediately return (without writing the special tuple).
+        :param pipeline: the Pr to call for each item
+        :param kwargs: the kwargs set by the caller, must include pid, maxerrors and abortflag
+        :return:
+        """
         pid = kwargs["pid"]
         logger = logging.getLogger(__name__ + ".PipelineRunnerSeq."+str(pid))
         logger.debug("Started PipelineRunnerSeq")
         n_total = 0
         n_nok = 0
+        abortflag = kwargs["abortflag"]
+        maxerrors = kwargs["maxerrors"]
         # if we get a tuple where id and item are None, we immediately end reading the
         # queue! Even if there is no data for us at all, we should always at least get that end of work signal!
         while True:
             logger.debug("Reading from input queue")
+            if abortflag.value != 0:
+                logger.info("Abort flag set, aborting worker...")
+                return n_total, n_nok
             id, item = self.input_queue.get()
             logger.debug("Got from input queue id={}".format(id))
             if id is None:
@@ -174,6 +218,9 @@ class PipelineRunnerSeq:
             except Exception as ex:
                 logger.error("Error processing item {} in process {}: {}".format(id, kwargs["pid"], ex))
                 n_nok += 1
+                if n_nok > maxerrors:
+                    abortflag.value = 1
+
         logger.debug("Writing to output queue None")
         self.output_queue.put((None, None))
         # TODO: we should return the results lists from the PRs that produce results here somehow
@@ -226,7 +273,7 @@ class SequenceProcessor(Processor):
 
     def __init__(self, source, nprocesses=1, pipeline=None,
                  destination=None, use_destination_tuple=False, maxsize_iqueue=10,
-                 maxsize_oqueue=10, runtimeargs={}, stoponerror=False):
+                 maxsize_oqueue=10, runtimeargs={}, maxerrors=0):
         """
         Process some serial access source and optionally send the processed items to
         a serial destination.
@@ -243,8 +290,8 @@ class SequenceProcessor(Processor):
         :param maxsize_iqueue: the maximum number of items to put into the input queue before locking
         :param maxsize_oqueue: the maximum number of items to put into the output queue before locking
         :param runtimeargs: a dictionary of kwargs to add to the kwargs passed on to the Prs
-        :param stoponerror: try to stop as soon as possible as soon as an error is encountered.
-        NOTE: not yet implemented!!!
+        :param maxerrors: maximum number of continuable errors to allow per process before everything gets stopped.
+        Note: errors in the reader or writer always terminate the process.
         """
         import collections
         if isinstance(source, collections.Iterator) or isinstance(source, collections.Iterable):
@@ -274,6 +321,7 @@ class SequenceProcessor(Processor):
         self.maxsize_oqeueue = maxsize_oqueue
         self.runtimeargs = runtimeargs
         self.use_destination_tuple = use_destination_tuple
+        self.maxerrors = maxerrors
 
     def run(self):
         """
@@ -286,36 +334,45 @@ class SequenceProcessor(Processor):
         n_nok = 0
         if self.nprocesses == 1:
             # just run everything directly in here, no multiprocessing
+            # NOTE: if the source throws an error, this will bubble up and terminate the method so we do not
+            # need to trap the error here!
             for id, item in enumerate(self.source):
                 n_total += 1
+                haveerror = False
                 try:
                     if self.pipeline is not None:
                         item = run_pipeline_on(self.pipeline, item, id=id, pid=1)
                 except Exception as ex:
                     logger.error("Error processing item {}: {}".format(id, ex))
                     n_nok += 1
-                # now if there is a destination, pass it on to there
-                writer_error = False
-                if self.destination:
-                    # TODO: catch writer error!
-                    if self.use_destination_tuple:
-                        self.destination.write((id, item))
-                    else:
-                        self.destination.write(item)
-            # TODO: instead of the for loop, use something that allows to trap reader error
+                    if n_nok > self.maxerrors:
+                        raise Exception("Maximum number of errors ({}) reached, aborting".format(n_nok))
+                    haveerror = True
+                if not haveerror and self.destination:
+                    try:
+                        if self.use_destination_tuple:
+                            self.destination.write((id, item))
+                        else:
+                            self.destination.write(item)
+                    except Exception as ex:
+                        raise Exception("Error trying to write to the destination: {}".format(ex))
+            # the reader and writer errors are thrown earlier, so if we arrive here, there were none
             return n_total, n_nok, False, False
         else:
             # ok, do the actual multiprocessing
             # first, check if the pipeline contains any Pr which is single process only
             if not ProcessingResource.supports_multiprocessing(self.pipeline):
                 raise Exception("Cannot run multiprocessing, pipeline contains single processing PR")
-            # first set up a pool for the workers
+            # shared value to indicate that we need to abort the workers if set to something other than zero
+            abortflag = Value('i', 0)
+            # set up a pool for the workers
             pool = Pool(self.nprocesses)
             kw = self.runtimeargs
             kw["nprocesses"] = self.nprocesses
             kw.update(self.runtimeargs)
+            kw["abortflag"] = abortflag
+            kw["maxerrors"] = self.maxerrors
             rets = []
-            # TODO: should all queues come from the same manager instance or different ones??
             mgr = multiprocessing.Manager()
             input_queue = mgr.Queue(maxsize=self.maxsize_iqeueue)
             reader_pool = Pool(1)
@@ -324,31 +381,32 @@ class SequenceProcessor(Processor):
             output_queue = None
             if self.destination is not None:
                 output_queue = mgr.Queue(maxsize=self.maxsize_oqeueue)
-            #    writer_pool = Pool(1)
-            #    logger.debug("Running writer pool apply async")
-            #    writer_pool_ret = pool.apply_async(destination_writer, [output_queue, self.destination, self.nprocesses], kw)
             pipeline_runner = PipelineRunnerSeq(input_queue, output_queue)
             for i in range(self.nprocesses):
-                # logger.info("Starting process {}".format(i))
                 kw["pid"] = i
                 tmpkw = kw.copy()
                 logger.debug("Running worker pool process {} apply async".format(i))
                 ret = pool.apply_async(pipeline_runner, (self.pipeline,), tmpkw)
                 rets.append(ret)
-            # now wait for the processes and pool to finish
-            # TODO If we have a destination, we could actually do the processing for that one right here instead of
-            # a separate process!
             writer_error = False
+            # handle writing the results to the destination in our own process here, that way, in-memory
+            # destinations are created in our own process!
             if self.destination is not None:
                 logger.debug("Calling destination writer with {} {} {} {}".format(output_queue, self.destination, self.nprocesses, kw))
-                writer_error = destination_writer(output_queue, self.destination, **kw)
-
+                writer_error = False
+                # we trap writer errors so we can try to wait for and finish the other processes!
+                try:
+                    destination_writer(output_queue, self.destination, **kw)
+                except Exception as ex:
+                    writer_error = True
+                    abortflag.value = 1
+                    logger.error("Encountered writer error: {}".format(ex))
+            # now wait for the processes and pool to finish
             pool.close()
             pool.join()
             reader_pool.close()
             reader_pool.join()
             reader_error = reader_pool_ret.get()
-
             for r in rets:
                 rval = r.get()
                 n_total += rval[0]
