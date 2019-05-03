@@ -1,6 +1,7 @@
 """
 How to parse the (X)HTML we get into a sequence of paragraphs and gather
 a bit of additional data for this.
+TODO: maybe consider https://github.com/kennethreitz/requests-html 
 """
 
 from html.parser import HTMLParser
