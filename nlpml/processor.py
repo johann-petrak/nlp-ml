@@ -59,7 +59,7 @@ is optionally done in parallel using multiprocessing.
 # TODO: implement the dataset processor, the current version is based on the old sequence processor
 
 from abc import ABC, abstractmethod
-from processingresources import ProcessingResource
+from .processingresources import ProcessingResource
 from multiprocessing import Pool, Value
 import multiprocessing
 import logging

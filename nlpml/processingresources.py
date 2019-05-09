@@ -7,6 +7,7 @@ set to be for single processing use only if the field singleprocess is set to Tr
 
 from abc import ABC, abstractmethod
 
+
 class ProcessingResource(ABC):
     """
     Abstract base class of all processing resources. Subclasses are classes where the
@@ -47,11 +48,13 @@ class PrCallFunction(ProcessingResource):
     """
 
     def __init__(self, function, *args):
+        super().__init__()
         self.function = function
         self.args = args
 
     def __call__(self, item, **kwargs):
         return self.function(item, *self.args)
+
 
 class PrPipeline(ProcessingResource):
     """
@@ -59,6 +62,7 @@ class PrPipeline(ProcessingResource):
     """
 
     def __init__(self, listofprs):
+        super().__init__()
         self.listofprs = listofprs
 
     def __call__(self, item, **kwargs):

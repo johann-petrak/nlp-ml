@@ -4,8 +4,7 @@ Library for extending PyTorch modules
 '''
 
 import torch
-from torch.nn import functional as F
-import callbacks as callbacksmodule
+from .nncallbacks import CallbackList, EpochHistory
 import sys
 import numpy as np
 import time
@@ -260,8 +259,8 @@ class ExtendedModule(torch.nn.Module):
         # Standard implementation
         # metricsdir is a dictionary mapping metric names to values, this gets returned from
         # train_on_batch and evaluate_generator
-        callbacklist = callbacksmodule.CallbackList(callbacks, model=self)
-        history = callbacksmodule.EpochHistory()
+        callbacklist = CallbackList(callbacks, model=self)
+        history = EpochHistory()
         callbacklist.append(history)
         callbacklist.on_train_begin()
         for epoch in range(initial_epoch, epochs, 1):
