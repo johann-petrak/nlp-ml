@@ -230,7 +230,6 @@ class DirFilesDataset(ExtendedDataset):
         :param files_exist: if True, all files must already exist, if False, this is mainly for
           use as a cache.
         """
-        import torch
         self.directory = directory
         self.is_writable = True
         self.basenames = basenames
@@ -350,8 +349,8 @@ if __name__ == "__main__":
         print("Last one!!!", file=writer)
 
     ds = LineTsvDataset(file="tmp_linetsvdataset.tsv", reinit=True)
-    for line in ds:
-        print(line)
+    for i, line in enumerate(ds):
+        print("LineTsvDataset line {}:".format(i), line)
 
     print("Last line: ", ds[-1])
     print("First line: ", ds[-5])

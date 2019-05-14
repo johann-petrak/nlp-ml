@@ -6,6 +6,7 @@ Tests.
 import unittest
 import logging
 import sys
+from .processingresources import PrCallFunction, ProcessingResource, PrPipeline
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -14,15 +15,6 @@ formatter = logging.Formatter(
                 '%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
 streamhandler.setFormatter(formatter)
 logger.addHandler(streamhandler)
-
-# add file handler to gatelfdata and our own loggers
-#filehandler = logging.FileHandler("test_api.log")
-#logger1 = logging.getLogger("gatelfdata")
-#logger1.setLevel(logging.INFO)
-#logger1.addHandler(filehandler)
-#logger.addHandler(filehandler)
-
-from processingresources import PrCallFunction, ProcessingResource, PrPipeline
 
 
 def putinlist(item):
@@ -59,8 +51,8 @@ class TestProcessingResources1(unittest.TestCase):
 class TestProcessorSeq1(unittest.TestCase):
 
     def test_serial1(self):
-        from processor import SequenceProcessor
-        from destination import SdList
+        from .processor import SequenceProcessor
+        from .destination import SdList
         source = list(range(100))
         target = [(x+1)*3 for x in source]
         results = []
@@ -104,9 +96,9 @@ class TestProcessorSeq1(unittest.TestCase):
 class TestProcessorDataset1(unittest.TestCase):
 
     def test_serial1(self):
-        from processor import DatasetProcessor
-        from dataset import ListDataset
-        from destination import SdList
+        from .processor import DatasetProcessor
+        from .dataset import ListDataset
+        from .destination import SdList
         data = list(range(100))
         ds = ListDataset(data)
         target = [(x+1)*3 for x in data]

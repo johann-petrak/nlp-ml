@@ -7,7 +7,7 @@ their equivalent or spaces
 import html
 import codecs
 import re
-import htmlparser
+from .htmlparser import MyHTMLParser
 import sys
 import unicodedata
 
@@ -28,7 +28,7 @@ def clean_string(thestring, replace_invalid=None, process_html=True, parse_html=
     # step 1: parse HTML or remove HTML character entities
     if process_html:
         if parse_html:
-            parser = htmlparser.MyHTMLParser()
+            parser = MyHTMLParser()
             parser.reset()
             parser.feed(thestring)
             parser.close()

@@ -17,13 +17,12 @@ class MyHTMLParser(HTMLParser):
         self.p = []
         self.TAGS = ['p', 'br', 'tr', 'div', 'caption']
 
-
-    def finishp(self):
+    def finishp(self) -> None:
         if len(self.p) > 0:
             self.data.append(self.p)
             self.p = []
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag, attrs) -> None:
         # print("Encountered a start tag:", tag)
         if tag in ['script', 'style']:
             self.ignore = True
@@ -33,7 +32,7 @@ class MyHTMLParser(HTMLParser):
         # elif tag in ['???']:
         #     self.p.append(" ")
 
-    def handle_endtag(self, tag):
+    def handle_endtag(self, tag) -> None:
         # print("Encountered an end tag :", tag)
         if tag in ['script', 'style']:
             self.ignore = False
@@ -43,26 +42,26 @@ class MyHTMLParser(HTMLParser):
         # elif tag in ['???']:
         #     self.p.append(" ")
 
-    def handle_startendtag(self, tag, attrs):
+    def handle_startendtag(self, tag, attrs) -> None:
         # print("Encountered a startend tag:", tag)
         if tag in self.TAGS:
             self.finishp()
 
-    def handle_data(self, data):
+    def handle_data(self, data) -> None:
         # print("Encountered some data  :", data)
         if not self.ignore:
             self.p.append(data)
 
-    def close(self):
+    def close(self) -> None:
         HTMLParser.close(self)
         self.finishp()
 
-    def reset(self):
+    def reset(self) -> None:
         HTMLParser.reset(self)
         self.data = []
         self.p = []
 
-    def text(self):
+    def text(self) -> str:
         """
         Convert back to text.
         """
