@@ -6,7 +6,7 @@ Tests.
 import unittest
 import logging
 import sys
-from .processingresources import PrCallFunction, ProcessingResource, PrPipeline
+from nlpml.processingresources import PrCallFunction, ProcessingResource, PrPipeline
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

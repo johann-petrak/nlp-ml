@@ -59,11 +59,11 @@ is optionally done in parallel using multiprocessing.
 # TODO: implement the dataset processor, the current version is based on the old sequence processor
 
 from abc import ABC, abstractmethod
-from .processingresources import ProcessingResource
+import multiprocessing as mp
 from multiprocessing import Pool, Value
-import multidistrproc
 import logging
 import sys
+from nlpml.processingresources import ProcessingResource
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -301,9 +301,9 @@ class SequenceProcessor(Processor):
         if nprocesses > 0:
             self.nprocesses = nprocesses
         elif nprocesses == 0:
-            self.nprocesses = multidistrproc.cpu_count()
+            self.nprocesses = mp.cpu_count()
         else:
-            self.nprocesses = min(multidistrproc.cpu_count(), abs(nprocesses))
+            self.nprocesses = min(mp.cpu_count(), abs(nprocesses))
         # if we use multiprocessing, check if the pipeline can be pickled!
         if self.nprocesses != 1:
             import pickle
@@ -373,7 +373,7 @@ class SequenceProcessor(Processor):
             kw["abortflag"] = abortflag
             kw["maxerrors"] = self.maxerrors
             rets = []
-            mgr = multidistrproc.Manager()
+            mgr = mp.Manager()
             input_queue = mgr.Queue(maxsize=self.maxsize_iqeueue)
             reader_pool = Pool(1)
             logger.debug("Running reader pool apply async")
@@ -441,9 +441,9 @@ class DatasetProcessor(Processor):
         if nprocesses > 0:
             self.nprocesses = nprocesses
         elif nprocesses == 0:
-            self.nprocesses = multidistrproc.cpu_count()
+            self.nprocesses = mp.cpu_count()
         else:
-            self.nprocesses = min(multidistrproc.cpu_count(), abs(nprocesses))
+            self.nprocesses = min(mp.cpu_count(), abs(nprocesses))
         # if we use multiprocessing, check if the pipeline can be pickled!
         if pipeline is not None and self.nprocesses != 1:
             import pickle
@@ -500,7 +500,7 @@ class DatasetProcessor(Processor):
             kw["nprocesses"] = self.nprocesses
             kw.update(self.runtimeargs)
             rets = []
-            mgr = multidistrproc.Manager()
+            mgr = mp.Manager()
             if self.destination is not None:
                 output_queue = mgr.Queue(maxsize=self.maxsize_oqeueue)
             pipeline_runner = PipelineRunnerDataset(self.dataset, output_queue)

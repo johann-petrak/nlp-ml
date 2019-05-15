@@ -7,7 +7,9 @@ Some tests for the multiprocessing code.
 import unittest
 from unittest import TestCase
 from loguru import logger
-from .multidistrproc import Supervisor
+import multiprocessing as mp
+
+from nlpml.multidistrproc import Supervisor, ConsumerProcess
 
 
 class TestSerial1(TestCase):
@@ -32,6 +34,24 @@ class TestSerial1(TestCase):
         sv.run()
         logger.info("Got l={}".format(l))
         self.assertEqual(l, target)
+
+
+class TestMultiParts1(TestCase):
+
+    def test_consumer_process1(self):
+        # attempt to test the code in the same process
+        mgr = mp.Manager()
+        cflag = mgr.Value('l', 0)
+        aflag = mgr.Value('l', 0)
+        cqueue = mgr.Queue()
+        cp = ConsumerProcess()
+
+        def cfunc(x):
+            logger.info("cfunc got {}".format(x))
+        for x in range(5):
+            cqueue.put(x)
+        cinfo = {"maxerrors": 0, "maxqsize": 0}
+        cp(cfunc, cqueue, cflag, aflag, cinfo, 0)
 
 
 if __name__ == '__main__':

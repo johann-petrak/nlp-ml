@@ -3,13 +3,34 @@
 Support for running jobs in multiprocessing or even distributed processing form.
 '''
 
-import collections
-import multiprocessing as mp
-from loguru import logger
 import sys
+import os
+import collections
 from typing import List, Tuple, Union, Callable, Dict, Optional
+import multiprocessing as mp
 from multiprocessing import Queue, Value
 from collections.abc import Iterable, Iterator
+import queue
+from time import sleep
+
+from loguru import logger
+
+
+def curprocessinfo() -> Tuple[int, int, str]:
+    if hasattr(os, 'getppid'):
+        ppid = os.getppid()
+    else:
+        ppid = None
+    cp = mp.current_process()
+    return cp.pid, ppid, cp.name
+
+
+def queue_readanddiscard(thequeue: Queue) -> None:
+    while True:
+        try:
+            thequeue.get_nowait()
+        except queue.Empty:
+            break
 
 
 class ConsumerProcess:
@@ -27,9 +48,69 @@ class ConsumerProcess:
                  cqueue: Queue,
                  cflag: Value,
                  aflag: Value,
-                 maxerrors: int,
+                 consumerinfo: Dict,
                  myid: int) -> None:
-        print("Starting consumer {}".format(myid))
+        """
+        Run the consumer process. This reads items from the input queue and passes them on to the consumer function.
+        Normal termination happens when the cflag is one and the input queue is empty.
+        If the input queue is empty otherwise, the process will check again after empty_retry seconds. If the input
+        queue is still empty after empty_max retries, the process will abort. The process will also abort if more
+        than maxerrors exception are thrown when processing some item.
+        :param consumerfunction: a callable that does something with each item from the input queue
+        :param cqueue: the intput queue
+        :param cflag: the consumer process flag, if 1, this means that the superviser signals end of processing
+        :param aflag: the global abort flag, if this is 1 all processing should end in all processes and components
+        :param maxerrors: the maximum number of times an exception can be thrown when consuming an item before
+        everything is aborted
+        :param myid: the serial number of this process
+        :param empty_retry: the time in seconds to wait when the queue is empty but processing has not finished yet
+        :param empty_max: the maximum number of tiems to wait when the queue is empty before aborting
+        :return:
+        """
+        from loguru import logger
+        maxerrors = consumerinfo["maxerrors"]
+        empty_retry = consumerinfo["empty_retry"]
+        empty_max = consumerinfo["empty_max"]
+        pinfo = curprocessinfo()
+        logger.info("Starting consumer {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
+        haderrors: int = 0
+        hadretried: int = 0
+        while True:
+            if aflag.value == 1:
+                queue_readanddiscard(cqueue)
+                break
+            finishflag = cflag.value
+            try:
+                item = cqueue.get_nowait()
+                hadretried = 0  # reset the empty queue attempts counter, since we got a non-empty queue!
+                # we got an item, pass it on to the actual consumer function
+                # catch any exception and depending on maxerrors abort early
+                try:
+                    consumerfunction(item)
+                except Exception as ex:
+                    # log the error
+                    logger.exception("Caught exception in ConsumerProcess")
+                    haderrors += 1
+                    # if we had more than maxerrors, terminate "immediately". To avoid problems this means we
+                    # go on to read and discard elements from the queue until it is empty
+                    if haderrors > maxerrors:
+                        logger.error("Got more than {} errors for this consumer process, terminating".format(maxerrors))
+                        aflag = 1
+                        queue_readanddiscard(cqueue)
+                        break
+            except queue.Empty:
+                # if the queue is empty, let us check if the finish flag was set before we did try to read the queue
+                # if yes we should terminate, otherwise wait a second before checking again
+                if finishflag == 1:
+                    break
+                else:
+                    hadretried += 1
+                    if hadretried > empty_max:
+                        aflag = 1
+                        logger.error("Consumer queue empty for more than {} retries, aborting".format(empty_max))
+                        break
+                    sleep(empty_retry)
+        logger.info("Stopping consumer {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
 
 
 class WorkerProcess:
@@ -48,10 +129,59 @@ class WorkerProcess:
                  iqueue: Queue,
                  oqueue: Queue,
                  rqueue: Queue,
-                 cflag: Value,
+                 wflag: Value,
                  aflag: Value,
-                 maxerrors: int, myid: int) -> None:
-        print("Starting worker {}".format(myid))
+                 workerinfo: Dict,
+                 myid: int) -> None:
+        from loguru import logger
+        maxerrors = workerinfo["maxerrors"]
+        empty_retry = workerinfo["empty_retry"]
+        empty_max = workerinfo["empty_max"]
+        listify = workerinfo["listify"]
+        pinfo = curprocessinfo()
+        logger.info("Starting worker {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
+        haderrors: int = 0
+        hadretried: int = 0
+        while True:
+            if aflag.value == 1:
+                queue_readanddiscard(iqueue)
+                break
+            finishflag = wflag.value
+            try:
+                item = iqueue.get_nowait()
+                hadretried = 0  # reset the empty queue attempts counter, since we got a non-empty queue!
+                # we got an item, pass it on to the actual consumer function
+                # catch any exception and depending on maxerrors abort early
+                try:
+                    ret = workerfunction(item)
+                    if listify:
+                        ret = [ret]
+                    for x in ret:
+                        oqueue.put(x)
+                except Exception as ex:
+                    # log the error
+                    logger.exception("Caught exception in WorkerProcess")
+                    haderrors += 1
+                    # if we had more than maxerrors, terminate "immediately". To avoid problems this means we
+                    # go on to read and discard elements from the queue until it is empty
+                    if haderrors > maxerrors:
+                        logger.error("Got more than {} errors for this worker process, terminating".format(maxerrors))
+                        aflag = 1
+                        queue_readanddiscard(iqueue)
+                        break
+            except queue.Empty:
+                # if the queue is empty, let us check if the finish flag was set before we did try to read the queue
+                # if yes we should terminate, otherwise wait a second before checking again
+                if finishflag == 1:
+                    break
+                else:
+                    hadretried += 1
+                    if hadretried > empty_max:
+                        aflag = 1
+                        logger.error("Queue empty for more than {} retries, aborting".format(empty_max))
+                        break
+                    sleep(empty_retry)
+        logger.info("Stopping worker {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
 
 
 class ProducerProcess:
@@ -60,6 +190,10 @@ class ProducerProcess:
     This class gets initialised before getting passed to each consumer process and then gets called
     once to get executed in the process. It should iterate over all items in the iterable/iterator and
     send those items off to the producer queue.
+
+    NOTE: this process can block and hang forever if the elements which get put into the queue are not retrieved.
+    We could work around this by using some long timeout and aborting if the queue is full even after waiting for
+    that long, but for now, we assume that the workers and consumers will always empty the queue anyway.
     """
     def __init__(self) -> None:
         pass
@@ -69,8 +203,19 @@ class ProducerProcess:
                  pqueue: Queue,
                  cflag: Value,
                  aflag: Value,
-                 maxerrors: int, myid: int) -> None:
-        print("Starting producer {}".format(myid))
+                 producerinfo: Dict,
+                 myid: int) -> None:
+        from loguru import logger
+        pinfo = curprocessinfo()
+        maxerrors = producerinfo["maxerrors"]
+        logger.info("Starting producer {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
+        if not isinstance(producer, Iterator):
+            producer_iter = iter(producer)
+        else:
+            producer_iter = producer
+        for el in producer_iter:
+            pqueue.put(el)
+        logger.info("Stopping producer {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
 
 
 class Supervisor:
@@ -101,6 +246,7 @@ class Supervisor:
                      producer: Union[Iterable, Iterator],
                      nproc: int = 1,
                      machine: Optional[Tuple[str, int]] = None,
+                     maxqsize: int = 20,
                      maxerrors: int = 0) -> None:
         """
         Add a producer to the beginning of the processing pipeline. A producer somehow generates items to get processed
@@ -111,6 +257,9 @@ class Supervisor:
         no duplicate data is produced.
         :param machine: if None, run on the local host, otherwise the (host,port) specification of a computer to run
         the producer(s) on. TODO: config for how to do the remote running!
+        :param maxqsize: maximum number of items to put on the output queue before blocking, in order to prevent
+        using up too much memory. All producers share the same output queue, only the maxqsize setting for the first
+        producer added is used.
         :param maxerrors: how many exceptions to allow when an item is generated, if maxerrors is reached, the whole
         processing will abort
         :return:
@@ -120,7 +269,7 @@ class Supervisor:
         else:
             raise Exception("producer must be an Iterator or Iterable")
         self._producers.append(
-            {"code": producer, "nproc": nproc, "machine": machine, "maxerrors": maxerrors}
+            {"code": producer, "nproc": nproc, "machine": machine, "maxerrors": maxerrors, "maxqsize": maxqsize}
         )
         self.nproducers = len(self._producers)
         if nproc > 1 or machine is not None or self.nproducers > 1:
@@ -133,6 +282,7 @@ class Supervisor:
                    nproc: int = 1,
                    machine: Optional[Tuple[str, int]] = None,
                    maxerrors: int = 0,
+                   maxqsize: int = 20,
                    listify: bool = False):
         """
         Add a worker as the next stage in the processing.
@@ -143,6 +293,8 @@ class Supervisor:
         :param worker: something that is callable, optionally something that implements the Processor interface.
         :param nproc: how many worker processes to run in parallel
         :param machine: if None, run on the local machine, otherwise the host:port specification of the machine
+        :param maxqsize: maximum number of items to put on the output queue before blocking, in order to prevent
+        using up too much memory.
         :param maxerrors: how many exceptions to allow before aborting everything
         :param listify: when True, a worker callable that returns a return value gets the return value wrapped in
         a list. This can be used to use existing function more easily without wrapping them to follow the monad
@@ -150,7 +302,8 @@ class Supervisor:
         :return:
         """
         self._workers.append(
-            {"code": worker, "nproc": nproc, "machine": machine, "maxerrors": maxerrors, "listify": listify}
+            {"code": worker, "nproc": nproc, "machine": machine, "maxerrors": maxerrors, "listify": listify,
+             "maxqsize": maxqsize}
         )
         self.nworkers = len(self._workers)
         if nproc > 1 or machine is not None:
@@ -257,7 +410,7 @@ class Supervisor:
                     p = mp.Process(
                         target=consumerprocess,
                         name="consumer" + str(i),
-                        args=(consumercode, cqueue, cflag, aflag, consumermaxerrors, i))
+                        args=(consumercode, cqueue, cflag, aflag, consumerinfo, i))
                     consumerinfo["procs"].append(p)
                     p.start()
         if self.nworkers > 0:
@@ -266,9 +419,10 @@ class Supervisor:
             # otherwise there is no output queue for the last!
             # Each worker group gets its own finished flag which it will check in order to figure out
             # if processing has finished
+            # TODO: !!!!!!
             pass
         # now create the producers: we need a shared output queue and the flags to update when we are finished
-        pqueue = mgr.Queue()
+        pqueue = mgr.Queue(maxsize=self._producers[0].get("maxqsize", 20))
         pflag = mgr.Value('l', 0)  # signed long, initilized with 0=OK
         allproducerprocs = []
         for producerinfo in self._producers:
@@ -281,7 +435,7 @@ class Supervisor:
                 p = mp.Process(
                     target=producerprocess,
                     name="producer" + str(i),
-                    args=(producercode, pqueue, pflag, aflag, producermaxerrors, i)
+                    args=(producercode, pqueue, pflag, aflag, producerinfo, i)
                 )
                 producerinfo["procs"].append(p)
                 allproducerprocs.append(p)
