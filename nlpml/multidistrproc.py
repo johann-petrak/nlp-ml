@@ -1,9 +1,21 @@
 #!/usr/bin/env python
 '''
-Support for running jobs in multiprocessing or even distributed processing form.
+Support for running jobs in multiprocessing or distributed processing form.
 '''
 
-import sys
+
+# TODO: the following stuff needs checking
+# * type annotations for Queue and Value may need to consider what we get from the package versus manager (proxies)
+
+# TODO: implement distributed processing:
+# * for this each component (producer, worker, consumer) gets a non-empty machine setting
+# * on that machine we need to have a controller process running which in turn has a syncmanager process started.
+# * the controller process reads a special queue to get instructions for who to start a bunch of worker, consumer,
+#   producer processes
+# * But the difference is that we probably cannot send over the queue and values directly, instead, each of the
+#   remote controllers must get these from our own central sync manager
+
+
 import os
 import collections
 from typing import List, Tuple, Union, Callable, Dict, Optional
@@ -65,12 +77,14 @@ class ComponentInfo:
     nproc: int = 1       # number of processes
     aflag: Value      # abort flag
     fflag: Value      # finish flag
+    # the defaults here are mainly to simplify the unit tests, in normal use these should get
+    # set by the code creating the specific component infor for a specific purpose
     ntotal: Value = mp.Value('l', 0)     # total number of items tried to process/produce/consume
     nerror: Value = mp.Value('l', 0)     # number of items where we got an error (ntotal-nerror is number successful)
     maxerrors: int = 0   # maximum number of errors allowed in this component
     countevery: int = 100  # update shared counters every that many iterations
     procs: List[Process]  # list of processes running this component
-    timeout: Optional[int] = None # timeout, by default None to indicate that there is no timeout
+    timeout: Optional[int] = None  # timeout, by default None to indicate that there is no timeout
 
     def join(self):
         """
