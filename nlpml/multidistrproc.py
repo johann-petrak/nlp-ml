@@ -1,21 +1,9 @@
 #!/usr/bin/env python
 '''
-Support for running jobs in multiprocessing or distributed processing form.
+Support for running jobs in multiprocessing or even distributed processing form.
 '''
 
-
-# TODO: the following stuff needs checking
-# * type annotations for Queue and Value may need to consider what we get from the package versus manager (proxies)
-
-# TODO: implement distributed processing:
-# * for this each component (producer, worker, consumer) gets a non-empty machine setting
-# * on that machine we need to have a controller process running which in turn has a syncmanager process started.
-# * the controller process reads a special queue to get instructions for who to start a bunch of worker, consumer,
-#   producer processes
-# * But the difference is that we probably cannot send over the queue and values directly, instead, each of the
-#   remote controllers must get these from our own central sync manager
-
-
+import sys
 import os
 import collections
 from typing import List, Tuple, Union, Callable, Dict, Optional
@@ -27,6 +15,8 @@ from time import sleep
 from collections import Counter
 
 from loguru import logger
+logger.remove()
+logger.add(sys.stderr, level="INFO")
 
 
 def get_all_from_queue(thequeue: mp.Queue):
@@ -77,14 +67,12 @@ class ComponentInfo:
     nproc: int = 1       # number of processes
     aflag: Value      # abort flag
     fflag: Value      # finish flag
-    # the defaults here are mainly to simplify the unit tests, in normal use these should get
-    # set by the code creating the specific component infor for a specific purpose
     ntotal: Value = mp.Value('l', 0)     # total number of items tried to process/produce/consume
     nerror: Value = mp.Value('l', 0)     # number of items where we got an error (ntotal-nerror is number successful)
     maxerrors: int = 0   # maximum number of errors allowed in this component
     countevery: int = 100  # update shared counters every that many iterations
     procs: List[Process]  # list of processes running this component
-    timeout: Optional[int] = None  # timeout, by default None to indicate that there is no timeout
+    timeout: Optional[int] = None # timeout, by default None to indicate that there is no timeout
 
     def join(self):
         """
@@ -158,6 +146,10 @@ class ConsumerProcess(ComponentProcess):
         self.iqueue = info.iqueue
         self.empty_max = info.empty_max
         self.empty_retry = info.empty_retry
+        from loguru import logger
+        logger.remove()
+        logger.add(sys.stderr, level="INFO")
+        self.logger = logger
 
     def __call__(self, myid: int = 0) -> None:
         """
@@ -169,9 +161,8 @@ class ConsumerProcess(ComponentProcess):
         :param myid: the serial number of this process
         :return:
         """
-        from loguru import logger
         pinfo = curprocessinfo()
-        logger.info("Starting consumer {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
+        self.logger.info("Starting consumer {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
         haderrors: int = 0
         hadretried: int = 0
         niterations: int = 0
@@ -186,9 +177,9 @@ class ConsumerProcess(ComponentProcess):
                     self.shared_ntotal.value += self.ntotal
                 self.ntotal = 0
             if self.aflag.value == 1:
-                logger.error("Consumer {}, got abort flag, consuming rest of queue".format(myid))
+                self.logger.error("Consumer {}, got abort flag, consuming rest of queue".format(myid))
                 queue_readanddiscard(self.iqueue)
-                logger.error("Consumer {} aborting".format(myid))
+                self.logger.error("Consumer {} aborting".format(myid))
                 break
             finishflag = self.fflag.value
             try:
@@ -198,17 +189,17 @@ class ConsumerProcess(ComponentProcess):
                 # catch any exception and depending on maxerrors abort early
                 try:
                     self.ntotal += 1
-                    logger.info("DEBUG: consumer process {} passing item {} to consumer".format(myid, item))
+                    self.logger.debug("DEBUG: consumer process {} passing item {} to consumer".format(myid, item))
                     self.consumer(item)
                 except Exception as ex:
                     # log the error
-                    logger.exception("Caught exception in ConsumerProcess")
+                    self.logger.exception("Caught exception in ConsumerProcess")
                     haderrors += 1
                     self.nerror += 1
                     # if we had more than maxerrors, terminate "immediately". To avoid problems this means we
                     # go on to read and discard elements from the queue until it is empty
                     if haderrors > self.maxerrors:
-                        logger.error("Got more than {} errors for this consumer process, terminating".format(self.maxerrors))
+                        self.logger.error("Got more than {} errors for this consumer process, terminating".format(self.maxerrors))
                         self.aflag.value = 1
                         queue_readanddiscard(self.iqueue)
                         break
@@ -216,13 +207,13 @@ class ConsumerProcess(ComponentProcess):
                 # if the queue is empty, let us check if the finish flag was set before we did try to read the queue
                 # if yes we should terminate, otherwise wait a second before checking again
                 if finishflag == 1:
-                    logger.info("Consumer {} found finish flag, exiting".format(myid))
+                    self.logger.info("Consumer {} found finish flag, exiting".format(myid))
                     break
                 else:
                     hadretried += 1
                     if hadretried > self.empty_max:
                         self.aflag.value = 1
-                        logger.error("Consumer queue empty for more than {} retries, aborting".format(self.empty_max))
+                        self.logger.error("Consumer queue empty for more than {} retries, aborting".format(self.empty_max))
                         break
                     sleep(self.empty_retry)
         # update the shared counters only when finishing to save locking overhead time
@@ -230,7 +221,7 @@ class ConsumerProcess(ComponentProcess):
             self.shared_nerror.value += self.nerror
         with self.shared_ntotal.get_lock():
             self.shared_ntotal.value += self.ntotal
-        logger.info("Stopping consumer {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
+        self.logger.info("Stopping consumer {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
 
 
 class WorkerProcess(ComponentProcess):
@@ -250,11 +241,14 @@ class WorkerProcess(ComponentProcess):
         self.listify = info.listify
         self.empty_max = info.empty_max
         self.empty_retry = info.empty_retry
+        from loguru import logger
+        logger.remove()
+        logger.add(sys.stderr, level="INFO")
+        self.logger = logger
 
     def __call__(self, myid: int) -> None:
-        from loguru import logger
         pinfo = curprocessinfo()
-        logger.info("Starting worker {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
+        self.logger.info("Starting worker {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
         haderrors: int = 0
         hadretried: int = 0
         niterations: int = 0
@@ -263,7 +257,7 @@ class WorkerProcess(ComponentProcess):
         process_nerror = 0
         while True:
             niterations += 1
-            logger.info("DEBUG: worker process {}/pid={} iteration {}".format(myid, pinfo[0], niterations))
+            self.logger.debug("DEBUG: worker process {}/pid={} iteration {}".format(myid, pinfo[0], niterations))
             if niterations % self.countevery == 0:
                 # update the shared counters
                 with self.shared_nerror.get_lock():
@@ -273,9 +267,9 @@ class WorkerProcess(ComponentProcess):
                     self.shared_ntotal.value += self.ntotal
                 self.ntotal = 0
             if self.aflag.value == 1:
-                logger.error("Worker {}, got abort flag, consuming rest of queue".format(myid))
+                self.logger.error("Worker {}, got abort flag, consuming rest of queue".format(myid))
                 queue_readanddiscard(self.iqueue)
-                logger.error("Worker {} aborting".format(myid))
+                self.logger.error("Worker {} aborting".format(myid))
                 break
             finishflag = self.fflag.value
             try:
@@ -286,39 +280,40 @@ class WorkerProcess(ComponentProcess):
                 try:
                     self.ntotal += 1
                     process_ntotal += 1
-                    logger.info("DEBUG: worker process {}/pid={} passing item {} to worker".format(myid, pinfo[0], item))
+                    self.logger.debug("DEBUG: worker process {}/pid={} passing item {} to worker".format(myid, pinfo[0], item))
                     ret = self.worker(item)
                     if self.listify:
                         ret = [ret]
                     for x in ret:
-                        logger.info("DEBUG: worker process {}/pid={} putting result item {} on queue".format(myid, pinfo[0], item))
-                        self.oqueue.put(x)
+                        self.logger.debug("DEBUG: worker process {}/pid={} putting result item {} on queue".format(myid, pinfo[0], item))
+                        if self.oqueue != None:
+                            self.oqueue.put(x)
                 except Exception as ex:
                     # log the error
-                    logger.exception("Caught exception in WorkerProcess")
+                    self.logger.exception("Caught exception in WorkerProcess")
                     haderrors += 1
                     self.nerror += 1
                     process_nerror += 1
                     # if we had more than maxerrors, terminate "immediately". To avoid problems this means we
                     # go on to read and discard elements from the queue until it is empty
                     if haderrors > self.maxerrors:
-                        logger.error("Got more than {} errors for this worker process, terminating".format(self.maxerrors))
+                        self.logger.error("Got more than {} errors for this worker process, terminating".format(self.maxerrors))
                         self.aflag.value = 1
                         queue_readanddiscard(self.iqueue)
                         break
             except queue.Empty:
-                logger.info(
+                self.logger.debug(
                     "DEBUG: worker process {}/pid={} got empty queue".format(myid, pinfo[0]))
                 # if the queue is empty, let us check if the finish flag was set before we did try to read the queue
                 # if yes we should terminate, otherwise wait a second before checking again
                 if finishflag == 1:
-                    logger.info("Worker {} found finish flag, exiting".format(myid))
+                    self.logger.info("Worker {} found finish flag, exiting".format(myid))
                     break
                 else:
                     hadretried += 1
                     if hadretried > self.empty_max:
                         self.aflag.value = 1
-                        logger.error("Queue empty for more than {} retries, aborting".format(self.empty_max))
+                        self.logger.error("Queue empty for more than {} retries, aborting".format(self.empty_max))
                         break
                     sleep(self.empty_retry)
         # the result/state and if yes, put the result on the rqueue
@@ -326,20 +321,23 @@ class WorkerProcess(ComponentProcess):
         # If the worker represents a whole pipeline, then the result is really a (possibly nested) list of
         # the results of the leaf workers. The worker should also have a "combine_results()" method which
         # is then used to combine all those results
-        if self.rqueue is not None and hasattr(self.worker, "result") and callable(self.result) and \
-                hasattr("merge_results") and callable(self.worker.merge_results):
+        if self.rqueue is not None and hasattr(self.worker, "result") and callable(self.worker.result) and \
+                hasattr(self.worker, "merge_results") and callable(self.worker.merge_results):
             try:
+                self.logger.info("Sending back results from worker {}".format(myid))
                 result = self.worker.result()
             except Exception as ex:
-                logger.error("Exception when trying to retrieve results for worker {}".format(self.myid))
+                self.logger.error("Exception when trying to retrieve results for worker {}".format(myid))
                 result = None
             self.rqueue.put(result)
+        else:
+            self.logger.info("Not a worker that can handle results, not sending anything")
         with self.shared_nerror.get_lock():
             self.shared_nerror.value += self.nerror
         with self.shared_ntotal.get_lock():
             self.shared_ntotal.value += self.ntotal
-        logger.info("Stopping worker {} process pid={} ppid={} name={}, total={}, error={}".
-                    format(myid, pinfo[0], pinfo[1], pinfo[2], process_ntotal, process_nerror))
+        self.logger.info("Exiting worker {} process pid={} ppid={} name={}, total={}, error={}".
+                         format(myid, pinfo[0], pinfo[1], pinfo[2], process_ntotal, process_nerror))
 
 
 class ProducerProcess(ComponentProcess):
@@ -357,11 +355,14 @@ class ProducerProcess(ComponentProcess):
         super().__init__(info)
         self.producer = info.producer
         self.oqueue = info.oqueue
+        from loguru import logger
+        logger.remove()
+        logger.add(sys.stderr, level="INFO")
+        self.logger = logger
 
     def __call__(self, myid: int) -> None:
-        from loguru import logger
         pinfo = curprocessinfo()
-        logger.info("Starting producer {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
+        self.logger.info("Starting producer {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
         if not isinstance(self.producer, Iterator):
             # We expect this to always work for now since we check the type when the producer gets added!
             producer_iter = iter(self.producer)
@@ -381,30 +382,30 @@ class ProducerProcess(ComponentProcess):
                     self.shared_ntotal.value += self.ntotal
                 self.ntotal = 0
             if self.aflag.value == 1:
-                logger.error("Producer {}, got abort flag, aborting".format(myid))
+                self.logger.error("Producer {}, got abort flag, aborting".format(myid))
                 break
             try:
                 el = next(producer_iter)
                 self.ntotal += 1
-                logger.info("DEBUG: producer {} putting item {} on queue".format(myid, el))
+                self.logger.debug("DEBUG: producer {} putting item {} on queue".format(myid, el))
                 self.oqueue.put(el)
             except StopIteration:
-                logger.info("Producer {} finished".format(myid))
+                self.logger.info("Producer {} finished".format(myid))
                 break
             except Exception as ex:
-                logger.exception("Got an exception during producer:next")
+                self.logger.exception("Got an exception during producer:next")
                 haderrors += 1
                 self.nerror += 1
                 self.ntotal += 1  # we do not count this one if we get an exception so count here
                 if haderrors > self.maxerrors:
                     self.aflag.value = 1
-                    logger.error("More than {} errors in producer {}, aborting".format(self.maxerrors, myid))
+                    self.logger.error("More than {} errors in producer {}, aborting".format(self.maxerrors, myid))
                     break
         with self.shared_nerror.get_lock():
             self.shared_nerror.value += self.nerror
         with self.shared_ntotal.get_lock():
             self.shared_ntotal.value += self.ntotal
-        logger.info("Stopping producer {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
+        self.logger.info("Stopping producer {} process pid={} ppid={} name={}".format(myid, pinfo[0], pinfo[1], pinfo[2]))
 
 
 class Supervisor:
@@ -604,6 +605,8 @@ class Supervisor:
         # the queue for the producer will be set by the consumer or the first worker (there must be at least one
         # consumer or worker)
         pqueue = None
+        cqueue = None
+        mgr = mp.Manager()   # even locally we need a manger for the result queue to avoid deadlocks, see below!
         if self.nconsumers > 0:
             # for all consumers together we need a queue and a an abort flag
             cqueue = mp.Queue()
@@ -636,7 +639,8 @@ class Supervisor:
                 wi = self._workers[wid]
                 wi.procs = []
                 if wid == len(self._workers)-1:
-                    # last worker, we use the consumer queue for output
+                    # last worker, we use the consumer queue for output, if there is one otherwise
+                    # do not have an output queue (cqueue will be None)
                     oqueue = cqueue
                 else:
                     # otherwise use the input queue of the next worker for output
@@ -650,6 +654,8 @@ class Supervisor:
                 wi.aflag = aflag
                 wi.nerror = mp.Value('l', 0)
                 wi.ntotal = mp.Value('l', 0)
+                if hasattr(wi.worker, "result"):
+                    wi.rqueue = mgr.Queue()
                 workerprocess = WorkerProcess(wi)
                 for procnr in range(wi.nproc):
                     p = mp.Process(
@@ -691,9 +697,26 @@ class Supervisor:
         for wi in self._workers:
             logger.info("Finishing worker {}".format(wi))
             wi.fflag.value = 1
+        # wait for all workers to actually exit
+        # NOTE: if the result queue is a mp.Queue() that would cause a deadlock since join will not succeed
+        # until all data from the queue is flushed to the pipe. This supposedly is not a problem with a Queue
+        # from a Manger!
+        for wi in self._workers:
             for p in wi.procs:
                 logger.info("Waiting for worker {} to finish".format(p))
                 p.join()
+        # we go through each of the workers in sequence and check if there is something to retrieve there
+        for wi in self._workers:
+            if wi.rqueue is not None and hasattr(wi.worker, "result") and callable(wi.worker.result):
+                logger.info("Fetching worker {} results from result queue".format(wi.worker))
+                # get all the results from the result queue
+                results = get_all_from_queue(wi.rqueue)
+                logger.info("DEBUG: got results: {}".format(len(results)))
+                wi.worker.merge_results(results)
+            else:
+                logger.info("No results for worker {}".format(wi.worker))
+        # now that we got all the results we can actually wait for the worker to finish. This may take
+        # until all the outputs to any consumer have been processed as well
         # now that we have waited for all the worker processes, we should also wait for the consumers to finish
         # but first, set the consumer flag to finished (there is only one flag for all consumers, because they
         # all end once the last worker has ended)
@@ -704,15 +727,7 @@ class Supervisor:
                 for p in ci.procs:
                     logger.info("Waiting for consumer {} to finish".format(p))
                     p.join()
-        # Now that all processing has finished, calculate the actual final states of all workers which have
-        # state
         # TODO: if we started a monitoring thread, stop and cleanup here!
-        # we go through each of the workers in sequence and check if there is something to do there
-        for wi in self._workers:
-            if wi.rqueue is not None and hasattr(wi.worker, "result") and callable(wi.worker.result):
-                # get all the results from the result queue
-                results = get_all_from_queue(wi.rqueue)
-                wi.merge_results(results)
         # End of local MP processing
         # return the counters
         # from each producer, worker, consumer, get the number of total/error and put in a list of triples
