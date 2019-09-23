@@ -10,7 +10,7 @@ from loguru import logger
 import multiprocessing as mp
 from time import sleep
 
-from . multidistrproc import Supervisor, ConsumerProcess, ConsumerInfo, WorkerInfo, WorkerProcess, \
+from . multidistr_queue import Supervisor, ConsumerProcess, ConsumerInfo, WorkerInfo, WorkerProcess, \
     ProducerInfo, ProducerProcess, get_all_from_queue
 
 

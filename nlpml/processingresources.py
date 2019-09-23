@@ -6,7 +6,7 @@ set to be for single processing use only if the field singleprocess is set to Tr
 """
 
 from abc import ABC, abstractmethod
-
+import pickle
 
 class ProcessingResource(ABC):
     """
@@ -47,13 +47,39 @@ class PrCallFunction(ProcessingResource):
     Processing resource to encapsulate calling any function.
     """
 
-    def __init__(self, function, *args):
+    def __init__(self, function, *args, **kwargs):
+        """
+        Wrap a function in a PR. IMPORTANT: it must be possible to pickle the function and all the arguments when
+        the Pr gets serialized.
+        This is tested at the time when the Pr gets created, which is not 100% accurate.
+        :param function: the function to wrap.
+        :param args: any constat arguments always to pass to the function, AFTER the item.
+        :param kwargs: any constant keyword arguments always to pass to the function
+        """
         super().__init__()
+        tmp = pickle.dumps((function, args, kwargs))
         self.function = function
         self.args = args
+        self.kwargs = kwargs
 
-    def __call__(self, item, **kwargs):
-        return self.function(item, *self.args)
+    def __call__(self, item, *args, **kwargs):
+        """
+        Call the function. item gets passed as first positional argument, followed by all the args
+        defined when this Pr was created, followed by any additional positional arguments specified
+        here. The kwargs specified at init time get updated by any kwargs specified here and also
+        get passed on to the function.
+        :param item: the item to process
+        :param args: any positional arguments to add in addition to those specified at init time
+        :param kwargs: any keyword arguments to add, overriding any specified at init time
+        :return:
+        """
+        allargs = []
+        allargs.extend(self.args)
+        allargs.extend(args)
+        allkwargs = {}
+        allkwargs.update(self.kwargs)
+        allkwargs.update(kwargs)
+        return self.function(item, *allargs, **allkwargs)
 
 
 class PrPipeline(ProcessingResource):

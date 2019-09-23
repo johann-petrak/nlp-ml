@@ -2,26 +2,40 @@
 '''
 Temporary implementation of the Dataset interface without dependency on
 pytorch to make accessing the data file in a sorted way possible.
+
+A Dataset is something that allows direct acces to every item using bracket-notation, e.g
+myds[22]. There is no initial assumption about how a dataset is represented, e.g. one file on
+harddisk, a databse, something in memory etc. nor about the possibility of parallel access to
+the same dataset from separate threads or processes. Specific subclasses may implement
+these or other aspects in a specific way.
+
+
 IMPORTANT! This has been copied over from a different library and currently
 contains some features which are not used or relevant in here.
 '''
+
+# TODO: all wrappers should also hand through calls to setitem and other base methods!!
 
 import os
 import random
 import sys
 import pickle
 import json
-
+import numbers
 
 class ExtendedDataset(object):
     """
     Our own base class for datasets which adds a few conventions:
     is_writable is False by default but some Datasets can be defined to be writable.
-    Writable datasets implement __setitem(self, key, item)__ for a key that is an integer.
+    Writable datasets implement __setitem__(self, key, item) for a key that is an integer.
+    is_multi_read is True by default: if a dataset can be reasonably wrapped and/or read by several
+    clients in multiple threads at the same time, this should be True, otherwise false. If
+    doing this would corrupt the dataset or impose a significant performance penalty it should be False.
     Note: all classes that derive from this class should invoke the parent init method!
     """
     def __init__(self):
         self.is_writable = False
+        self.is_multi_read = True
 
     def __setitem__(self, key, value):
         """
@@ -34,6 +48,9 @@ class ExtendedDataset(object):
 
 
 class ListDataset(ExtendedDataset):
+    """
+    A  list wrapped into a dataset.
+    """
 
     def __init__(self, thelist):
         super().__init__()
@@ -47,16 +64,20 @@ class ListDataset(ExtendedDataset):
     def __len__(self):
         return len(self.data)
 
+
 class ShuffledDataset(ExtendedDataset):
     """
-    Represents a shuffled version of another dataset.
+    Represents a shuffled version of another dataset. A shuffled dataset wraps an existing
+    dataset by mapping the indices of the original dataset to a permutation of those indices.
+    The shuffle method can be used to re-shuffle the dataset.
     """
 
     def __init__(self, dataset, seed=None):
         """
-        :param seed: if not None, shuffle the list of instances randomly, using the given seed.
-          If the seed is 0, the system time is used, if seed is -1, the seed is not set at all
-          and whatever the current state of the random generator is is used.
+        :param seed: if an integer and > 0, shuffle the list of instances randomly, using the given seed.
+        If the seed is 0, the RNGs random random seed is used, if seed is -1, the seed is not set at all
+        and whatever the current state of the random generator is is used. If None, no shuffling is
+        carried out. If this is None or not an integer, same as 0.
         """
         super().__init__()
         self.dataset = dataset
@@ -67,21 +88,70 @@ class ShuffledDataset(ExtendedDataset):
     def shuffle(self, seed=0):
         """
         Shuffle instance list order,
-        :param seed: random seed to set, if seed is 0, system time is used, if -1, seed is not set.
+        :param seed: random seed to set, if seed is 0, a random random seed is used, if -1, seed is not set.
+        If seed is None, no shuffling is carried out.
         :return:
         """
-        if seed != -1:
-            if seed == 0:
-                random.seed()
-            else:
-                random.seed(seed)
-        random.shuffle(self.idxs)
+        if isinstance(seed, numbers.Integral):   # also allow for np.int8(n) and the like
+            if seed != -1:
+                if seed == 0:
+                    random.seed()
+                else:
+                    random.seed(seed)
+            random.shuffle(self.idxs)
+        else:  # not an integer seed: None or some other type
+            # same as seed 0
+            random.seed()
+            random.shuffle(self.idxs)
 
     def __getitem__(self, key):
         return self.dataset[self.idxs[key]]
 
     def __len__(self):
         return len(self.idxs)
+
+
+class EveryNthDataset(ExtendedDataset):
+    """
+    Wraps a dataset to only provide every nth row, starting with the kth row.
+    For example with n=3 and k=0, the rows 0,1,2,3,4 correspond to the
+    rows 0,3,6,9,12 of the wrapped dataset, with n=3 and k=2, we get
+    rows 2,5,8,11,14 etc. The wrapped dataset must allow to get used by more than
+    one client at the same time!
+    """
+
+    def __init__(self, dataset, n, k):
+        """
+        Wrap dataset to access every nth row, starting with the kth row (k: zero-based).
+        Important: if the wrapped dataset does not allow (reasonable) concurrent access, it may
+        still be possible to wrap several separate dataset instances which all point to the
+        same underlying resource (e.g. LineTsvDataset)
+        :param dataset: the dataset to wrap, must allow multiple concurrent access
+        :param n: the increment
+        :param k: the offset, must be < n
+        """
+        if (not isinstance(n, numbers.Integral)) or (not isinstance(k, numbers.Integral)):
+            raise Exception("n and k must be integers.")
+        if n < 2 or k < 0 or k >= n:
+            raise Exception("n must be >= 2 and k must be >= 0 and < n")
+        self.n = n
+        self.k = k
+        self.dataset = dataset
+        # precalculate the length
+        otherlen = len(dataset)
+        # the size of this dataset is int((otherlen + (n-k) - 1)/k)
+        self.len = int((otherlen + (n - k) - 1) / k)
+
+    def __getitem__(self, item):
+        if not isinstance(item, numbers.Integral):
+            raise Exception("Item must be an integer")
+        if item >= self.len or item < 0:
+            raise Exception("Item must be >= 0 and < {}".format(self.len))
+        # the index to access in the original dataset is int(n*item)+k
+        return self.dataset[item * self.n + self.k]
+
+    def __len__(self):
+        return self.len
 
 
 # TODO: this should get replaced by ProcessingDataset where the transformations
@@ -268,7 +338,6 @@ class DirFilesDataset(ExtendedDataset):
         return self.len
 
     def __getitem__(self, index):
-        import torch
         fpath = self.path4(index)
         if self.as_format == "json":
             with open(fpath, "rt", encoding="utf8") as reader:
@@ -277,11 +346,11 @@ class DirFilesDataset(ExtendedDataset):
             with open(fpath, "rb") as reader:
                 return pickle.load(reader)
         elif self.as_format == "torch":
+            import torch
             with open(fpath, "rb") as reader:
                 return torch.load(reader, map_location="cpu")
 
     def __setitem__(self, index, value):
-        import torch
         fpath = self.path4(index)
         fname = "{}.{}".format(str(index), self.as_format)
         fpath = os.path.join(self.directory, fname)
@@ -292,6 +361,7 @@ class DirFilesDataset(ExtendedDataset):
             with open(fpath, "wb") as writer:
                 pickle.dump(value, writer)
         elif self.as_format == "torch":
+            import torch
             with open(fpath, "wb") as writer:
                 torch.save(value, writer)
         if not self.files_exist and index > (self.len-1):
