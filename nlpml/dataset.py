@@ -22,6 +22,8 @@ import sys
 import pickle
 import json
 import numbers
+import pathlib
+
 
 class ExtendedDataset(object):
     """
@@ -130,6 +132,7 @@ class EveryNthDataset(ExtendedDataset):
         :param n: the increment
         :param k: the offset, must be < n
         """
+        super().__init__()
         if (not isinstance(n, numbers.Integral)) or (not isinstance(k, numbers.Integral)):
             raise Exception("n and k must be integers.")
         if n < 2 or k < 0 or k >= n:
@@ -276,69 +279,162 @@ class LineTsvDataset(ExtendedDataset):
 class DirFilesDataset(ExtendedDataset):
 
     def path4(self, index):
-        if self.basenames is not None:
-            name = self.basenames[index]
+        if not self.is_dynamic:
+            if not isinstance(index, numbers.Integral) or index < 0:
+                raise Exception("Dataset is not dynamic and index is not a non-negative integer: {}".format(index))
+            if index >= self.len:
+                raise Exception("Index {} larger than maximum item number in dataset {}".format(index, self.len))
+        if self.path4id is not None:
+            name = self.path4id(index)
+        elif self.is_dynamic and isinstance(index, str):
+            name = index
+        elif self.paths is not None:
+            name = self.paths[index]
         else:
-            name = str(index)
-        fname = "{}.{}".format(name, self.as_format)
+            raise Exception("ODDD!!")
+        if self.ext is not None:
+            fname = name + self.ext
+        else:
+            fname = name + "." + self.as_format
         fpath = os.path.join(self.directory, fname)
         return fpath
 
-    def __init__(self, directory, as_format='pickle', basenames=None, files_exist=True):
+    def get_dir_paths(self):
         """
-        Create a dataset where instances are files in a directory. This is a very simple
-        implementation so far which only supports a single directory.
+        Return a list of matching files in the directory (or directory tree).
 
-        If basenames is given, then it must be a list of file basenames that correspond to each
-        id that exists in the dataset. The length of that list is taken as the length of this dataset.
-        These files are expected to already exist.
-        If no basenames are given, then the file base names are assumed to be the numbers from 0
-        to len(dataset)-1.
-        :param directory:
-        :param as_format:
-        :param basenames:
-        :param files_exist: if True, all files must already exist, if False, this is mainly for
-          use as a cache.
+        :return: list of files in some order.
         """
+        files = []
+        if self.ext is not None:
+            toendwith = self.ext
+        else:
+            toendwith = "." + self.as_format
+        endlen = len(toendwith)
+        for r, d, fs in os.walk(self.directory, topdown=True, followlinks=True):
+            files.extend((f[0:-endlen] for f in fs if f.endswith(toendwith)))
+            if not self.tree:
+                break
+        return files
+
+
+    def load_paths(self):
+        """
+        Create the list of file paths and store it in self.paths.
+        If self.paths is a string, try to load the paths list from that file. If it does not exist, load
+        by finding the matching files in the directory.
+
+        :return:
+        """
+        if isinstance(self.paths, str):
+            fname = os.path.join(self.directory, self.paths)
+            if os.path.exists(fname):
+                if fname.endswith(".pickle"):
+                    with open(fname, "rb") as fp:
+                        self.paths = pickle.load(fp)
+                elif fname.endswith(".json"):
+                    with open(fname, "rt") as fp:
+                        self.paths = json.load(fp)
+                else:
+                    self.paths = []
+                    with open(fname, "rt", encoding="utf-8") as fp:
+                        for line in fp:
+                            line = line.rstrip()
+                            self.paths.append(line)
+                assert isinstance(self.path, list)
+            else:
+                self.paths = self.get_dir_paths()
+                if fname.endswith(".pickle"):
+                    with open(fname, "wb") as fp:
+                        self.paths = pickle.dump(self.paths, fp)
+                elif fname.endswith(".json"):
+                    with open(fname, "wt") as fp:
+                        self.paths = json.dumo(self.paths, fp)
+                else:
+                    self.paths = []
+                    with open(fname, "wt", encoding="utf-8") as fp:
+                        for f in self.paths:
+                            print(f, file=fp)
+        elif self.paths is None:
+            self.paths = self.get_dir_paths()
+        else:
+            raise Exception("Odd: not loading path if it is not None or a file path, but {}".format(type(self.paths)))
+        self.len = len(self.paths)
+
+    def __init__(self, directory, as_format='pickle', paths=None, tree=False, path4id=None, is_writable=True,
+                 ext=None, size=0, is_dynamic=False):
+        """
+        Create a dataset where instances are files in a directory. This can be either a normal dataset where the size
+        needs to be known in advance or, if "is_dynamic" is True, something that allows to grow the dataset
+        and set non-integer keys (see below).
+
+        By default, the content of this dataset is the content of the directory (recursively if tree is not False),
+        restricted to all the files that match the extension implied by the format. The mapping between
+        row number and file path is determined at creation time and immutable afterwards.
+
+        If paths is given, then either a list is expected that maps relative file paths to each id, or
+        a string that identifies a file in the directory that contains all the file paths and which will
+        get loaded at inite time. If that file does not exist, it is created on the fly.
+
+        The size of the dataset is the size of the list (unless is_dynamic).
+        Accessing an item where the file does not exist returns None.
+        That item can be changed into a different value by storing it in which case the file from the
+        paths list is created.
+
+        Finally, if path4id is given, it must be a callable that returns a filename for a row number.
+
+        If is_dynamic is True: the path4id function, if given, is not used to get the size, only numbers >= 0 are used.
+        The initial size of the dataset is set to the size we got from the initial paths and may get increased if
+        a row with a larger index is used, but there is no guarantee at all about the size of a dynamic dataset,
+        len should never be used for such a dataset! Note that accessing rows by numeric id will not work for any
+        row that is outside the known range.
+
+        :param directory: the directory to use for the files representing each row in the dataset
+        :param as_format: the format to use, currently this also has to be the file extension to use, one of
+        pickle, json, torch.
+        :param paths: a list of relative file paths (without the extension!!!)
+        :param tree: if True, recurse the directory to find the initial file names, only relevant if paths and
+        path4id are not specified.
+        :param path4id: if specified, must be a callable that returns a relative path (without extension)
+         for a row number (>=0)
+        :param ext: if not None, the  file extension to use for all the files, default is the format name
+        :param size: specify the size if path4id is used. If is_dynamic is true and path4id is used, specify the
+        initial size.
+        :param is_dynamic: if True, the size of the dataset is not fixed, writing to a new id/key will increase the
+        size. The id when reading can be a string when reading or writing. if path4id is defined, the string
+        is passed to that function and a path is expected. If path4id is not specified and the id is a string,
+        then that string is directly interpreted as a path.
+        """
+        super().__init__()
         self.directory = directory
-        self.is_writable = True
-        self.basenames = basenames
-        self.files_exist = files_exist
+        self.is_writable = is_writable
+        self.paths = paths
+        self.tree = tree
+        self.ext = ext
+        self.is_dynamic = is_dynamic
         if as_format not in ['pickle', 'json', 'torch']:
             raise Exception("Format must be one of pickle, json, torch")
         self.as_format = as_format
-        if basenames is None:
-            if not files_exist:
-                self.len = 0  # this will get updated whenever a file is stored
-                return  # do not need to do any checking!
-            # find all the files in the directory that exist
-            i = 0
-            len = 0
-            while True:
-                if os.path.exists(os.path.join(self.directory, str(i)+"."+self.as_format)):
-                   len = i+1
-                   i += 1
-                else:
-                    break
-            if len == 0:
-                raise Exception("No files found!")
-            self.len = len
+        self.path4id = path4id
+        if paths is None and path4id is None:
+            # get all the matching path names, either just in the directory or recursively and store
+            self.load_paths()
+        elif isinstance(paths, str) and path4id is None:
+            self.load_paths()
+        elif isinstance(paths, list) and path4id is None:
+            self.len = len(self.paths)
+        elif path4id and paths is None:
+            self.len = size
         else:
-            self.len = len(basenames)
-            if len == 0:
-                raise Exception("The basenames list must not be empty")
-            # check if all files are actually there
-            if files_exist:
-                for f in basenames:
-                    filename = os.path.join(self.directory, f+"."+self.as_format)
-                    if not os.path.exists(filename):
-                        raise Exception("File does not exist:", filename)
+            raise Exception("Cannot use both path4id and paths at the same time, one or none of them needed")
 
     def __len__(self):
         return self.len
 
     def __getitem__(self, index):
         fpath = self.path4(index)
+        if not os.path.exists(fpath):
+            return None
         if self.as_format == "json":
             with open(fpath, "rt", encoding="utf8") as reader:
                 return json.load(reader)
@@ -352,8 +448,9 @@ class DirFilesDataset(ExtendedDataset):
 
     def __setitem__(self, index, value):
         fpath = self.path4(index)
-        fname = "{}.{}".format(str(index), self.as_format)
-        fpath = os.path.join(self.directory, fname)
+        parent = pathlib.Path(fpath).parent
+        if not parent.exists():
+            parent.mkdir(parents=True, exist_ok=True)
         if self.as_format == "json":
             with open(fpath, "wt", encoding="utf8") as writer:
                 json.dump(value, writer)
@@ -364,49 +461,46 @@ class DirFilesDataset(ExtendedDataset):
             import torch
             with open(fpath, "wb") as writer:
                 torch.save(value, writer)
-        if not self.files_exist and index > (self.len-1):
-            self.len = index-1
 
 
-class DirCachedDataset(DirFilesDataset):
+class CachedDataset(ExtendedDataset):
 
-    def __init__(self, dataset=None, directory=None, as_format='pickle', basenames=None):
+    def __init__(self, basedataset, cachedataset, cacheonread=False):
         """
-        Create a caching dataset. If dataset is specified, then its length is used and
-        if an entry is not found, it is retrieved from that dataset and stored to the directory.
-        If basenames is given, then it must be a list of file basenames that correspond to each
-        id that exists in the dataset. The length of that list is taken as the length of this dataset.
-        The files do not have to exist initially.
-        If no dataset is given, and basenames are given, these files are expected to be in the
-        directory already. If no dataset and no basenames are given, then all files in the directory,
-        starting with basename 0 and incremented by one are used, until one is not found.
-        :param dataset:
-        :param directory:
-        :param as_format:
-        :param basenames:
+        Create a caching dataset. This will access data from the cachedataset, if it does not exist in there (entry is,
+        None) will instead fall back to the base dataset. In other words, a cache dataset must be set up as a
+        direct access dataset that is capable of returning None for non-existing items.
+
+        The cache can be set up to cache on read or cache on write.
+
+        NOTE: both datasets should maybe have the same size already but this is not checked so that a dynamic
+        DirFilesDataset instance can be used as well!
+
+        :param basedataset: any dataset
+        :param cachedataset: any ExtendedDataset which allows for empty slots to be represented as None
+        :param cacheonread: if True, writes to the cache as soon as an item has been read from the base dataset.
+        Otherwise will only write to the cache dataset when an item is set. This allows to cache the result
+        of processing efficiently.
         """
-        if directory is None:
-            raise("directory must be specified")
-        fe = (dataset is None)
-        super().__init__(directory, as_format=as_format, basenames=basenames, files_exist=fe)
-        self.dataset = dataset
+        super().__init__()
+        self.is_writable = True
+        self.basedataset = basedataset
+        self.cachedataset = cachedataset
+        self.cacheonread = cacheonread
 
     def __len__(self):
-        if self.dataset is None:
-            return self.len
-        else:
-            return len(self.dataset)
+        return len(self.basedataset)
 
     def __getitem__(self, index):
-        fpath = self.path4(index)
-        if os.path.exists(fpath):
-            return super().__getitem__(index)
-        else:
-            if self.dataset is None:
-                raise Exception("No dataset and unexpected missing file")
-            ret = self.dataset.__getitem__(index)
-            super().__setitem__(index, ret)
-            return ret
+        tmp = self.cachedataset[index]
+        if tmp is None:
+            tmp = self.basedataset
+            if self.cacheonread:
+                self[index] = tmp
+        return tmp
+
+    def __setitem__(self, index, value):
+        self.cachedataset[index] = value
 
 
 if __name__ == "__main__":
