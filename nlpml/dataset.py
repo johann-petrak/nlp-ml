@@ -361,7 +361,7 @@ class DirFilesDataset(ExtendedDataset):
             raise Exception("Odd: not loading path if it is not None or a file path, but {}".format(type(self.paths)))
         self.len = len(self.paths)
 
-    def __init__(self, directory, as_format='pickle', paths=None, tree=False, path4id=None, is_writable=True,
+    def __init__(self, directory, format='pickle', paths=None, tree=False, path4id=None, is_writable=True,
                  ext=None, size=0, is_dynamic=False):
         """
         Create a dataset where instances are files in a directory. This can be either a normal dataset where the size
@@ -390,7 +390,7 @@ class DirFilesDataset(ExtendedDataset):
         row that is outside the known range.
 
         :param directory: the directory to use for the files representing each row in the dataset
-        :param as_format: the format to use, currently this also has to be the file extension to use, one of
+        :param format: the format to use, currently this also has to be the file extension to use, one of
         pickle, json, torch. Alternately this can be a tuple of the format (extension, reader, writer) where
         reader(path) and writer(obj, path) are callables. The format or extensions must be given without a leading
         dot!
@@ -416,13 +416,13 @@ class DirFilesDataset(ExtendedDataset):
         self.reader = None
         self.writer = None
         self.is_dynamic = is_dynamic
-        if as_format not in ['pickle', 'json', 'torch']:
+        if format not in ['pickle', 'json', 'torch']:
             # check if it is a user defined format
-            if (isinstance(as_format, tuple) or isinstance(as_format, list)) and len(as_format) == 3:
-                self.ext, self.reader, self.writer = as_format
+            if (isinstance(format, tuple) or isinstance(format, list)) and len(format) == 3:
+                self.ext, self.reader, self.writer = format
             else:
                 raise Exception("Format must be one of pickle, json, torch or a triple (ext,reader,writer)")
-        self.as_format = as_format
+        self.as_format = format
         self.path4id = path4id
         if paths is None and path4id is None:
             # get all the matching path names, either just in the directory or recursively and store
