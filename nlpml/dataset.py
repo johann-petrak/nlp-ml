@@ -391,7 +391,8 @@ class DirFilesDataset(ExtendedDataset):
 
         :param directory: the directory to use for the files representing each row in the dataset
         :param as_format: the format to use, currently this also has to be the file extension to use, one of
-        pickle, json, torch.
+        pickle, json, torch. Alternately this can be a tuple of the format (extension, reader, writer) where
+        reader(path) and writer(obj, path) are callables.
         :param paths: a list of relative file paths (without the extension!!!)
         :param tree: if True, recurse the directory to find the initial file names, only relevant if paths and
         path4id are not specified.
@@ -411,9 +412,15 @@ class DirFilesDataset(ExtendedDataset):
         self.paths = paths
         self.tree = tree
         self.ext = ext
+        self.reader = None
+        self.writer = None
         self.is_dynamic = is_dynamic
         if as_format not in ['pickle', 'json', 'torch']:
-            raise Exception("Format must be one of pickle, json, torch")
+            # check if it is a user defined format
+            if (isinstance(as_format, tuple) or isinstance(as_format, list)) and len(as_format) == 3:
+                self.ext, self.reader, self.writer = as_format
+            else:
+                raise Exception("Format must be one of pickle, json, torch or a triple (ext,reader,writer)")
         self.as_format = as_format
         self.path4id = path4id
         if paths is None and path4id is None:
@@ -432,9 +439,18 @@ class DirFilesDataset(ExtendedDataset):
         return self.len
 
     def __getitem__(self, index):
+        """
+        Get the entry with the given index. If the dataset is dynamic, this should be the id/key
+        of the entry instead.
+        :param index:
+        :return:
+        """
         fpath = self.path4(index)
         if not os.path.exists(fpath):
             return None
+        # if we have a custom format reader, use it
+        if self.reader:
+            return self.reader(fpath)
         if self.as_format == "json":
             with open(fpath, "rt", encoding="utf8") as reader:
                 return json.load(reader)
@@ -451,7 +467,10 @@ class DirFilesDataset(ExtendedDataset):
         parent = pathlib.Path(fpath).parent
         if not parent.exists():
             parent.mkdir(parents=True, exist_ok=True)
-        if self.as_format == "json":
+        # if we have a custom format writer, use it
+        if self.writer:
+            self.writer(value, fpath)
+        elif self.as_format == "json":
             with open(fpath, "wt", encoding="utf8") as writer:
                 json.dump(value, writer)
         elif self.as_format == "pickle":
