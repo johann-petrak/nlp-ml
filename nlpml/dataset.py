@@ -293,7 +293,7 @@ class DirFilesDataset(ExtendedDataset):
         else:
             raise Exception("ODDD!!")
         if self.ext is not None:
-            fname = name + self.ext
+            fname = name + "." + self.ext
         else:
             fname = name + "." + self.as_format
         fpath = os.path.join(self.directory, fname)
@@ -307,7 +307,7 @@ class DirFilesDataset(ExtendedDataset):
         """
         files = []
         if self.ext is not None:
-            toendwith = self.ext
+            toendwith = "." + self.ext
         else:
             toendwith = "." + self.as_format
         endlen = len(toendwith)
@@ -392,7 +392,8 @@ class DirFilesDataset(ExtendedDataset):
         :param directory: the directory to use for the files representing each row in the dataset
         :param as_format: the format to use, currently this also has to be the file extension to use, one of
         pickle, json, torch. Alternately this can be a tuple of the format (extension, reader, writer) where
-        reader(path) and writer(obj, path) are callables.
+        reader(path) and writer(obj, path) are callables. The format or extensions must be given without a leading
+        dot!
         :param paths: a list of relative file paths (without the extension!!!)
         :param tree: if True, recurse the directory to find the initial file names, only relevant if paths and
         path4id are not specified.
