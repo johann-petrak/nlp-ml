@@ -142,15 +142,19 @@ class EveryNthDataset(ExtendedDataset):
         self.dataset = dataset
         # precalculate the length
         otherlen = len(dataset)
-        # the size of this dataset is int((otherlen + (n-k) - 1)/k)
-        self.len = int((otherlen + (n - k) - 1) / k)
+        # the size of this dataset is int((otherlen + (n-k) - 1)/n)
+        self.len = int((otherlen) / n)
+        # if k is < remainder, add one
+        if k < otherlen % n:
+            self.len += 1
 
     def __getitem__(self, item):
         if not isinstance(item, numbers.Integral):
             raise Exception("Item must be an integer")
         if item >= self.len or item < 0:
-            raise Exception("Item must be >= 0 and < {}".format(self.len))
+            raise IndexError("Item must be >= 0 and < {}, not {}".format(self.len, item))
         # the index to access in the original dataset is int(n*item)+k
+        print("DEBUG: returning item ", item*self.n + self.k)
         return self.dataset[item * self.n + self.k]
 
     def __len__(self):
@@ -283,7 +287,7 @@ class DirFilesDataset(ExtendedDataset):
             if not isinstance(index, numbers.Integral) or index < 0:
                 raise Exception("Dataset is not dynamic and index is not a non-negative integer: {}".format(index))
             if index >= self.len:
-                raise Exception("Index {} larger than maximum item number in dataset {}".format(index, self.len))
+                raise IndexError("Index {} larger than maximum item number in dataset {}".format(index, self.len))
         if self.path4id is not None:
             name = self.path4id(index)
         elif self.is_dynamic and isinstance(index, str):
@@ -481,6 +485,7 @@ class DirFilesDataset(ExtendedDataset):
             import torch
             with open(fpath, "wb") as writer:
                 torch.save(value, writer)
+
 
 
 class CachedDataset(ExtendedDataset):
